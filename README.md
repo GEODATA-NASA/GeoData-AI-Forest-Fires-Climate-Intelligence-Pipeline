@@ -129,7 +129,23 @@ python transformation/transform.py
 
 # Step 3: Load into PostgreSQL/PostGIS
 python loadation/load.py
+
+# Step 4: Train the high-FRP classification model
+python modeling/model.py
 ```
+
+The model classifies **high FRP among already detected fire events**; it does not
+predict fire occurrence because `fire_events` contains detections rather than
+labelled no-fire observations. Weather rows must contain `date`, `latitude`, and
+`longitude` as well as one or more of `RH2M`, `PRECTOTCORR`, and `GWETTOP`.
+The NASA POWER extraction script preserves these join keys; rerun extraction,
+transformation, and loading after updating an existing weather table.
+
+The default high-FRP threshold is 10 MW, and each fire is matched to the nearest
+same-day weather record within 100 km. Configure `HIGH_FRP_THRESHOLD`,
+`MAX_WEATHER_DISTANCE_KM`, `MAX_TRAINING_ROWS`, and `DB_SCHEMA` with environment
+variables if needed. The trained pipeline is saved to
+`modeling/artifacts/high_frp_classifier.joblib`.
 
 ---
 
