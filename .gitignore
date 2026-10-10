@@ -43,3 +43,6 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
+
+raw_data/
+cleaned_data/
