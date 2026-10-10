@@ -23,7 +23,7 @@ end_date = "20250131"
 url = f"https://power.larc.nasa.gov/api/temporal/daily/point?parameters=RH2M,PRECTOTCORR,GWETTOP&community=AG&longitude={lon}&latitude={lat}&start={start_date}&end={end_date}&format=JSON"
 
 print("Fetching climate and rainfall data from NASA POWER...")
-response = requests.get(url)
+response = requests.get(url, timeout=30)
 
 if response.status_code == 200:
     data = response.json()
@@ -32,6 +32,10 @@ if response.status_code == 200:
 
     # Convert the data to a DataFrame for viewing or storage
     df = pd.DataFrame(properties)
+    df.index.name = "date"
+    df = df.reset_index()
+    df["latitude"] = lat
+    df["longitude"] = lon
     print("Data retrieved successfully!")
     print(df.head())
 
