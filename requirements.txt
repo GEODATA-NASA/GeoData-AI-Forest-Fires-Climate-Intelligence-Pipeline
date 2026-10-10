@@ -1,0 +1,7 @@
+pandas==2.2.0
+sqlalchemy==2.0.25
+psycopg2-binary==2.9.13
+python-dotenv==1.0.1
+requests==2.31.0
+earthengine-api==1.4.2
+geemap==0.30.0
