@@ -22,3 +22,5 @@ FIRE_FILES = {
 }
 
 WEATHER_FILE = os.path.join(RAW_DATA_DIR, "nasa_power_weather.csv")
+
+os.makedirs(CLEANED_DATA_DIR, exist_ok=True)
