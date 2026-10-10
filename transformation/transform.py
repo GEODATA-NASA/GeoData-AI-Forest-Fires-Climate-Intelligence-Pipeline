@@ -13,6 +13,31 @@ from config import RAW_DATA_DIR, CLEANED_DATA_DIR, FIRE_FILES, WEATHER_FILE
 FIRE_CHUNK_SIZE = 100_000
 
 
+def normalize_fire_dataframe(df, source_name):
+    df = df.copy()
+    df.columns = [col.strip().lower() for col in df.columns]
+    df["satellite_source"] = source_name
+
+    if "acq_date" in df.columns:
+        df["acq_date"] = pd.to_datetime(df["acq_date"], errors="coerce")
+
+    if "latitude" in df.columns and "longitude" in df.columns:
+        df = df.dropna(subset=["latitude", "longitude"])
+
+    if "confidence" in df.columns:
+        df["confidence"] = (
+            df["confidence"].astype(str).str.strip().str.lower().replace({"h": 100, "n": 50, "l": 25})
+            .apply(lambda value: pd.to_numeric(value, errors="coerce"))
+        )
+        df["confidence"] = pd.to_numeric(df["confidence"], errors="coerce").astype("Int64")
+
+    for column in ["type", "acq_time"]:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce").astype("Int64")
+
+    return df
+
+
 def transform_fire_data(collect_data=True):
     print("Processing and cleaning NASA fire data...")
 
@@ -26,14 +51,7 @@ def transform_fire_data(collect_data=True):
             continue
 
         for df in pd.read_csv(file_path, chunksize=FIRE_CHUNK_SIZE):
-            df.columns = [col.strip().lower() for col in df.columns]
-            df["satellite_source"] = source_name
-
-            if "acq_date" in df.columns:
-                df["acq_date"] = pd.to_datetime(df["acq_date"], errors="coerce")
-
-            if "latitude" in df.columns and "longitude" in df.columns:
-                df = df.dropna(subset=["latitude", "longitude"])
+            df = normalize_fire_dataframe(df, source_name)
 
             df.to_csv(output_path, mode="w" if not output_written else "a",
                       header=not output_written, index=False)

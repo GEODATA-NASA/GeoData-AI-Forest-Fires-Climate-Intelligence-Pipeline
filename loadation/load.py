@@ -12,6 +12,24 @@ if str(ROOT_DIR) not in sys.path:
 
 from config import DB_CONFIG, CLEANED_DATA_DIR
 
+
+def normalize_fire_chunk(chunk):
+    chunk = chunk.copy()
+
+    if "confidence" in chunk.columns:
+        chunk["confidence"] = (
+            chunk["confidence"].astype(str).str.strip().str.lower().replace({"h": 100, "n": 50, "l": 25})
+            .apply(lambda value: pd.to_numeric(value, errors="coerce"))
+        )
+        chunk["confidence"] = pd.to_numeric(chunk["confidence"], errors="coerce").astype("Int64")
+
+    for column in ["type", "acq_time"]:
+        if column in chunk.columns:
+            chunk[column] = pd.to_numeric(chunk[column], errors="coerce").astype("Int64")
+
+    return chunk
+
+
 def get_connection_url():
     # Configure the PostgreSQL connection using variables imported from config.py
     return f"postgresql+psycopg2://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
@@ -38,12 +56,15 @@ def load_data_to_postgres():
         
         chunk_size = 50000
         first_chunk = True
+        chunk_count = 0
         
         for chunk in pd.read_csv(fires_file, chunksize=chunk_size, low_memory=False):
+            chunk = normalize_fire_chunk(chunk)
             mode = "replace" if first_chunk else "append"
             chunk.to_sql("fire_events", engine, if_exists=mode, index=False)
             first_chunk = False
-            print(f"Uploaded a chunk of {chunk_size} rows...")
+            chunk_count += 1
+            print(f"{chunk_count}: Uploaded a chunk of {chunk_size} rows")
             
         print("Fire table uploaded successfully!")
     else:
