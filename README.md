@@ -1,6 +1,6 @@
 # 🌍 GeoData AI: Forest Fires & Climate Intelligence Pipeline
 
-An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and stores satellite-based active fire detections (NASA FIRMS) together with climate and vegetation indicators (NASA POWER, Google Earth Engine) in a PostgreSQL/PostGIS spatial database, and trains a GeoAI model that classifies wildfire severity (high FRP) to support wildfire analysis and early-warning systems.
+An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and stores satellite-based active fire detections (NASA FIRMS) together with climate indicators (NASA POWER) in a PostgreSQL/PostGIS spatial database, and trains a GeoAI model that classifies wildfire severity (high FRP) to support wildfire analysis and early-warning systems.
 
 ---
 
@@ -8,7 +8,6 @@ An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and s
 
 - Merges multiple NASA FIRMS archives (MODIS and VIIRS) into a single standardized fire dataset containing millions of records.
 - Pulls daily meteorological parameters (humidity, precipitation, soil moisture) from the NASA POWER API.
-- Supports vegetation and temperature indicators (NDVI, LST) from Google Earth Engine.
 - Cleans, validates, and standardizes data into analysis-ready CSV files.
 - Efficiently bulk-loads results into PostgreSQL/PostGIS (`fire_events` and `weather_data` tables) for spatial queries.
 - Trains a `RandomForestClassifier` to classify high-severity fires, using a proper temporal split to avoid data leakage.
@@ -24,14 +23,12 @@ An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and s
 | Language | Python 3.10 – 3.12 |
 | ETL / Processing | Pandas, Requests |
 | Database & Spatial | PostgreSQL, PostGIS, SQLAlchemy, Psycopg2 |
-| Geospatial / Remote Sensing | Earth Engine API, geemap |
 | Machine Learning | scikit-learn (RandomForestClassifier), joblib |
 
 **Data sources**
 
 - **[NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/)** (NASA LANCE): MODIS and VIIRS active fire archives
 - **NASA POWER API**: daily humidity, precipitation, and soil moisture
-- **Google Earth Engine**: MODIS NDVI and LST
 
 ---
 
@@ -42,7 +39,7 @@ An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and s
  │   Extract    │ ──▶ │    Transform    │ ──▶ │       Load       │ ──▶ │      Model       │
  │ NASA FIRMS   │     │ Clean, merge,   │     │ PostgreSQL +     │     │ RandomForest     │
  │ NASA POWER   │     │ standardize     │     │ PostGIS          │     │ high-FRP         │
- │ Earth Engine │     │ → cleaned_data/ │     │ fire_events,     │     │ classifier       │
+ │              │     │ → cleaned_data/ │     │ fire_events,     │     │ classifier       │
  │              │     │                 │     │ weather_data     │     │ → .joblib        │
  └──────────────┘     └─────────────────┘     └──────────────────┘     └──────────────────┘
 ```
@@ -86,7 +83,6 @@ GEODATA
 
 - Python 3.10 – 3.12
 - PostgreSQL 14+ with the PostGIS extension installed
-- (Optional) A Google Earth Engine account for NDVI/LST data
 
 ### 1. Clone and install dependencies
 
@@ -120,13 +116,7 @@ DB_HOST=localhost
 DB_PORT=5432
 ```
 
-### 4. (Optional) Authenticate Google Earth Engine
-
-```bash
-earthengine authenticate
-```
-
-### 5. Run the pipeline
+### 4. Run the pipeline
 
 ```bash
 # Step 1: Fetch weather data from NASA POWER
@@ -189,7 +179,6 @@ SELECT ST_AsText(geom) FROM fire_events LIMIT 5;
 |---|---|
 | `psycopg2` connection error | Check `.env` values and that PostgreSQL is running |
 | `type "geometry" does not exist` | Run `CREATE EXTENSION postgis;` in the target database |
-| Earth Engine auth error | Re-run `earthengine authenticate` |
 | Package install fails | Use Python 3.10 – 3.12 and a fresh virtual environment |
 | Model finds no matching weather | Ensure weather rows include `date`, `latitude`, `longitude`, and rerun extraction, transformation, and loading |
 
@@ -207,16 +196,15 @@ SELECT ST_AsText(geom) FROM fire_events LIMIT 5;
 
 **Next steps**
 
-- [ ] Extend NASA POWER weather coverage to match the full time range of the fire data, increasing the number of training samples and improving precision and recall
-- [ ] Build a lightweight Django web app that connects to the database and serves predictions from the trained model
-- [ ] Add interactive maps (Leaflet.js / Folium) showing fire locations and predicted severity in the web app
-- [ ] Add Earth Engine NDVI/LST ingestion to the main run flow
+- [ ] Build a lightweight FastAPI service that connects to the database and serves predictions from the trained model
+- [ ] Add interactive maps (Leaflet.js / Folium) showing fire locations and predicted severity in the frontend
 - [ ] Add data-quality checks and logging
-- [ ] Schedule automated runs (cron / Airflow)
 
 **Future ideas**
 
+- [ ] Extend NASA POWER weather coverage to match the full time range of the fire data, increasing the number of training samples and improving precision and recall
 - [ ] RAG system on top of the stored data and project knowledge
+- [ ] Schedule automated runs (cron / Airflow)
 
 ---
 
