@@ -12,6 +12,10 @@ An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and s
 - Efficiently bulk-loads results into PostgreSQL/PostGIS (`fire_events` and `weather_data` tables) for spatial queries.
 - Trains a `RandomForestClassifier` to classify high-severity fires, using a proper temporal split to avoid data leakage.
 - Saves the trained pipeline as a reusable artifact (`high_frp_classifier.joblib`).
+- Runs end to end with a single command (`python main.py`) through a pipeline orchestrator.
+- Idempotent execution: each stage skips work that has already been done (existing files, tables, or a saved model).
+- Data-quality validation (`validate_fire_data`) that runs once and is skipped on later runs via a flag file.
+- Structured logging to `logs/pipeline.log` for progress, warnings, and errors.
 - Keeps all credentials in environment variables, with centralized configuration.
 
 ---
@@ -44,6 +48,8 @@ An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and s
  └──────────────┘     └─────────────────┘     └──────────────────┘     └──────────────────┘
 ```
 
+All stages are coordinated by `main.py`, which runs them in order: `NASA_POWER.py` ➔ `transform.py` ➔ `load.py` ➔ `train_model.py`.
+
 ---
 
 ## 📂 Project Structure
@@ -52,8 +58,11 @@ An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and s
 GEODATA
 ├─ .env                  # Environment variables (DB credentials) – never commit
 ├─ .env.example          # Template for environment configuration
+├─ main.py               # Pipeline orchestrator (single entry point)
 ├─ config.py             # Centralized configuration loader
 ├─ requirements.txt
+├─ logs/                 # Pipeline logs
+│  └─ pipeline.log
 ├─ raw_data/             # Original datasets downloaded from NASA
 │  ├─ fire_archive_J1V-C2_820252.csv
 │  ├─ fire_archive_M-C61_820251.csv
@@ -61,7 +70,8 @@ GEODATA
 │  └─ nasa_power_weather.csv
 ├─ cleaned_data/         # Cleaned, structured output
 │  ├─ cleaned_master_fires.csv
-│  └─ cleaned_weather.csv
+│  ├─ cleaned_weather.csv
+│  └─ .fire_validated.flag   # Marks that data-quality validation already passed
 ├─ integration/          # Extraction scripts (API fetchers)
 │  └─ NASA_POWER.py
 ├─ transformation/       # Cleaning and standardization
@@ -69,7 +79,7 @@ GEODATA
 ├─ loadation/            # Database loading
 │  └─ load.py
 ├─ modeling/             # Model training
-│  ├─ model.py
+│  ├─ train_model.py
 │  └─ artifacts/
 │     └─ high_frp_classifier.joblib
 └─ README.md
@@ -118,19 +128,41 @@ DB_PORT=5432
 
 ### 4. Run the pipeline
 
+Run the whole pipeline with a single command:
+
 ```bash
-# Step 1: Fetch weather data from NASA POWER
-python integration/NASA_POWER.py
-
-# Step 2: Clean and standardize all datasets
-python transformation/transform.py
-
-# Step 3: Load into PostgreSQL/PostGIS
-python loadation/load.py
-
-# Step 4: Train the high-FRP classification model
-python modeling/model.py
+python main.py
 ```
+
+`main.py` executes the stages in order:
+
+1. `integration/NASA_POWER.py`: fetch weather data from NASA POWER
+2. `transformation/transform.py`: clean and standardize all datasets
+3. `loadation/load.py`: load into PostgreSQL/PostGIS
+4. `modeling/train_model.py`: train the high-FRP classification model
+
+You can still run any stage on its own, for example `python modeling/train_model.py`.
+
+### Smart execution (skip logic)
+
+Each stage checks whether its output already exists and skips the work if so, which saves time and avoids repeating expensive steps:
+
+| Stage | Skipped when |
+|---|---|
+| Extraction | The weather data file already exists |
+| Transformation | The cleaned CSV files already exist |
+| Loading | The target tables already exist in the database |
+| Training | The saved model already exists at `modeling/artifacts/high_frp_classifier.joblib` |
+
+To force a stage to run again, delete its output (file, table, or saved model) and rerun `python main.py`.
+
+### Data-quality checks
+
+`validate_fire_data` checks the fire dataset the first time the pipeline runs. After a successful validation it writes the flag file `cleaned_data/.fire_validated.flag`, and later runs use that flag to skip the heavy checks. Delete the flag file to force revalidation.
+
+### Logging
+
+Pipeline progress, warnings, and errors are written to `logs/pipeline.log` instead of relying on plain `print` output. Check this file first when a run fails.
 
 ---
 
@@ -180,6 +212,9 @@ SELECT ST_AsText(geom) FROM fire_events LIMIT 5;
 | `psycopg2` connection error | Check `.env` values and that PostgreSQL is running |
 | `type "geometry" does not exist` | Run `CREATE EXTENSION postgis;` in the target database |
 | Package install fails | Use Python 3.10 – 3.12 and a fresh virtual environment |
+| A stage is skipped unexpectedly | Its output already exists; delete the file, table, or saved model to rerun it |
+| Validation is not running again | Delete `cleaned_data/.fire_validated.flag` |
+| Unclear failure | Check `logs/pipeline.log` |
 | Model finds no matching weather | Ensure weather rows include `date`, `latitude`, `longitude`, and rerun extraction, transformation, and loading |
 
 ---
@@ -192,20 +227,24 @@ SELECT ST_AsText(geom) FROM fire_events LIMIT 5;
 - [x] ETL pipeline for NASA FIRMS (MODIS and VIIRS) and NASA POWER data
 - [x] PostgreSQL/PostGIS schema (`fire_events`, `weather_data`) and bulk loading
 - [x] High-FRP `RandomForestClassifier` with temporal split, saved to `modeling/artifacts/high_frp_classifier.joblib`
+- [x] Pipeline orchestrator (`main.py`) running all stages with one command
+- [x] Idempotent execution with skip logic for existing files, tables, and the saved model
+- [x] Data-quality checks (`validate_fire_data`) with a flag file to skip repeated validation
+- [x] Structured logging to `logs/pipeline.log`
 - [x] Version control cleanup and publishing of code and trained model to GitHub
 
-**Next steps**
+**Next steps** (built on the current pipeline infrastructure)
 
 - [ ] Build a lightweight FastAPI service that connects to the database and serves predictions from the trained model
-- [ ] Add interactive maps (Leaflet.js / Folium) showing fire locations and predicted severity in the frontend
-- [ ] ​Power BI Dashboard & Analytics
-- [ ] Add data-quality checks and logging
-- [ ] Containerization & Deployment (Docker)
+- [ ] Extend logging to the API layer
+- [ ] Containerize the project with Docker
+- [ ] Build a Power BI dashboard on top of the stored data
+- [ ] Build a frontend with interactive maps (Leaflet.js / Folium) showing fire locations and predicted severity
 
 **Future ideas**
 
-- [ ] Extend NASA POWER weather coverage to match the full time range of the fire data, increasing the number of training samples and improving precision and recall
 - [ ] RAG system on top of the stored data and project knowledge
+- [ ] Extend NASA POWER weather coverage to match the full time range of the fire data, increasing the number of training samples and improving precision and recall
 - [ ] Schedule automated runs (cron / Airflow)
 
 ---
