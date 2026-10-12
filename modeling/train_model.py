@@ -38,6 +38,11 @@ if str(ROOT_DIR) not in sys.path:
 from config import DB_CONFIG
 
 LOGGER = logging.getLogger("geodata.model")
+MODEL_ARTIFACT_PATH = (
+    Path(__file__).resolve().parent
+    / "artifacts"
+    / "high_frp_classifier.joblib"
+)
 EARTH_RADIUS_KM = 6371.0088
 FIRE_CHUNK_SIZE = int(os.getenv("FIRE_CHUNK_SIZE", "100000"))
 MAX_TRAINING_ROWS = int(os.getenv("MAX_TRAINING_ROWS", "500000"))
@@ -403,7 +408,7 @@ def train_and_evaluate(data, feature_columns):
     for feature, importance in importance_report:
         LOGGER.info("  %s: %.4f", feature, importance)
 
-    output_path = Path(__file__).resolve().parent / "artifacts" / "high_frp_classifier.joblib"
+    output_path = MODEL_ARTIFACT_PATH
     output_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(
         {
@@ -424,6 +429,11 @@ def main():
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if MODEL_ARTIFACT_PATH.is_file():
+        joblib.load(MODEL_ARTIFACT_PATH)
+        LOGGER.info("Loaded existing model; ready at %s.", MODEL_ARTIFACT_PATH)
+        return 0
+
     if FIRE_CHUNK_SIZE <= 0 or MAX_TRAINING_ROWS <= 0:
         LOGGER.error("FIRE_CHUNK_SIZE and MAX_TRAINING_ROWS must be positive integers.")
         return 2
