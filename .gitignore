@@ -44,5 +44,9 @@ Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
 
+# Heavy Data
 raw_data/
 cleaned_data/
+
+# Logs
+logs/

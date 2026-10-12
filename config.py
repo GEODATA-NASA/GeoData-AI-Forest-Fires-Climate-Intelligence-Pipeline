@@ -1,6 +1,9 @@
 import os
 from dotenv import load_dotenv
 
+import logging
+import os
+
 load_dotenv()
 
 DB_CONFIG = {
@@ -24,3 +27,15 @@ FIRE_FILES = {
 WEATHER_FILE = os.path.join(RAW_DATA_DIR, "nasa_power_weather.csv")
 
 os.makedirs(CLEANED_DATA_DIR, exist_ok=True)
+
+os.makedirs("logs", exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.FileHandler("logs/pipeline.log", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("GeoDataAI")

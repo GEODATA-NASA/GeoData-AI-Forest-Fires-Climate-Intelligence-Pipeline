@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 from pathlib import Path
@@ -11,36 +12,47 @@ if str(ROOT_DIR) not in sys.path:
 
 from config import RAW_DATA_DIR, WEATHER_FILE
 
-os.makedirs(RAW_DATA_DIR, exist_ok=True)
+LOGGER = logging.getLogger("geodata.integration.nasa_power")
 
-# Region coordinates and start/end dates (for example, latitude 30, longitude 31, year 2025)
-lat = 30.0
-lon = 31.0
-start_date = "20250101"
-end_date = "20250131"
 
-# NASA POWER API endpoint for daily data requests (Community Agriculture/Climate)
-url = f"https://power.larc.nasa.gov/api/temporal/daily/point?parameters=RH2M,PRECTOTCORR,GWETTOP&community=AG&longitude={lon}&latitude={lat}&start={start_date}&end={end_date}&format=JSON"
+def download_weather_data():
+    """Download NASA POWER weather data unless the configured raw file exists."""
+    if os.path.isfile(WEATHER_FILE):
+        if os.path.getsize(WEATHER_FILE) == 0:
+            raise ValueError(f"Existing NASA POWER file is empty: {WEATHER_FILE}")
+        LOGGER.info("NASA POWER weather data is already downloaded: %s", WEATHER_FILE)
+        return WEATHER_FILE
 
-print("Fetching climate and rainfall data from NASA POWER...")
-response = requests.get(url, timeout=30)
+    os.makedirs(RAW_DATA_DIR, exist_ok=True)
 
-if response.status_code == 200:
+    # Region coordinates and start/end dates for the daily NASA POWER request.
+    latitude = 30.0
+    longitude = 31.0
+    start_date = "20250101"
+    end_date = "20250131"
+    url = (
+        "https://power.larc.nasa.gov/api/temporal/daily/point"
+        f"?parameters=RH2M,PRECTOTCORR,GWETTOP&community=AG"
+        f"&longitude={longitude}&latitude={latitude}"
+        f"&start={start_date}&end={end_date}&format=JSON"
+    )
+
+    LOGGER.info("Fetching climate and rainfall data from NASA POWER.")
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
     data = response.json()
-    # Extract daily parameter values
-    properties = data['properties']['parameter']
+    properties = data["properties"]["parameter"]
 
-    # Convert the data to a DataFrame for viewing or storage
     df = pd.DataFrame(properties)
     df.index.name = "date"
     df = df.reset_index()
-    df["latitude"] = lat
-    df["longitude"] = lon
-    print("Data retrieved successfully!")
-    print(df.head())
+    df["latitude"] = latitude
+    df["longitude"] = longitude
 
-    # Save the file into the configured data directory
     df.to_csv(WEATHER_FILE, index=False)
-    print(f"Saved weather data to: {WEATHER_FILE}")
-else:
-    print(f"Download failed, error code: {response.status_code}")
+    LOGGER.info("NASA POWER weather data saved to %s", WEATHER_FILE)
+    return WEATHER_FILE
+
+
+if __name__ == "__main__":
+    download_weather_data()
