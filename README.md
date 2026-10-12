@@ -198,7 +198,9 @@ SELECT ST_AsText(geom) FROM fire_events LIMIT 5;
 
 - [ ] Build a lightweight FastAPI service that connects to the database and serves predictions from the trained model
 - [ ] Add interactive maps (Leaflet.js / Folium) showing fire locations and predicted severity in the frontend
+- [ ] ​Power BI Dashboard & Analytics
 - [ ] Add data-quality checks and logging
+- [ ] Containerization & Deployment (Docker)
 
 **Future ideas**
 
