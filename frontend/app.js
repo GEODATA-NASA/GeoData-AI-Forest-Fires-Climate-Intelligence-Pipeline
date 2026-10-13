@@ -459,7 +459,7 @@
       state.lastProb = result.high_frp_probability;
       setPin(body.latitude, body.longitude, false);
       pulsePin(3);
-      state.pin.bindPopup(`<p class="pop-title">${(result.high_frp_probability * 100).toFixed(1)}% chance of a severe fire</p><p class="pop-sub">${result.is_high_frp ? "Predicted severe" : "Predicted normal"}</p>`).openPopup();
+      state.pin.bindPopup(`<p class="pop-title">${(result.high_frp_probability * 100).toFixed(1)}% chance of a severe fire</p><p class="pop-sub">${result.is_high_frp ? "Predicted severe" : "Predicted normal"}</p>`, { minWidth: 230 }).openPopup();
     } catch (error) {
       toast(`The detection could not be scored. ${error.message}`);
     } finally {
