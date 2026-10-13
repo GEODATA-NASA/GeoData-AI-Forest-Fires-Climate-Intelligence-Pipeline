@@ -17,6 +17,8 @@ An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and s
 - Data-quality validation (`validate_fire_data`) that runs once and is skipped on later runs via a flag file.
 - Structured logging to `logs/pipeline.log` for progress, warnings, and errors.
 - Keeps all credentials in environment variables, with centralized configuration.
+- **FastAPI service** (`api/`) that queries the database and serves fire detections, GeoJSON, statistics and **severity predictions** from the trained model, with request logging to `logs/api.log`.
+- **Interactive map frontend** (`frontend/`, Leaflet.js) showing fire locations coloured by predicted severity, daily statistics and a click-to-predict tool.
 
 ---
 
@@ -24,10 +26,12 @@ An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and s
 
 | Layer | Tools |
 |---|---|
-| Language | Python 3.10 – 3.12 |
+| Language | Python 3.10 – 3.14 |
 | ETL / Processing | Pandas, Requests |
 | Database & Spatial | PostgreSQL, PostGIS, SQLAlchemy, Psycopg2 |
 | Machine Learning | scikit-learn (RandomForestClassifier), joblib |
+| API | FastAPI, Uvicorn, Pydantic |
+| Frontend | Leaflet.js, vanilla JavaScript (served by the API) |
 
 **Data sources**
 
@@ -82,6 +86,18 @@ GEODATA
 │  ├─ train_model.py
 │  └─ artifacts/
 │     └─ high_frp_classifier.joblib
+├─ api/                  # FastAPI service
+│  ├─ main.py            # App factory (uvicorn api.main:app)
+│  ├─ settings.py        # API settings from .env
+│  ├─ logging_config.py  # Request logging -> logs/api.log
+│  ├─ predictor.py       # Loads the model, builds features, matches weather
+│  ├─ weather_index.py   # Same-day nearest-station lookup (as in training)
+│  ├─ repositories/      # Data access: PostgreSQL or CSV fallback
+│  ├─ routers/           # /health, /api/v1/fires, /api/v1/weather, /api/v1/predict
+│  ├─ tools_make_sample.py     # Build cleaned_data/fires_sample.csv for the CSV backend
+│  └─ tools_create_indexes.py  # Create PostgreSQL indexes used by the API
+├─ frontend/             # Leaflet map UI (index.html, app.js, style.css)
+├─ tests/                # pytest suite for the API
 └─ README.md
 ```
 
@@ -91,7 +107,7 @@ GEODATA
 
 ### Prerequisites
 
-- Python 3.10 – 3.12
+- Python 3.10 – 3.14
 - PostgreSQL 14+ with the PostGIS extension installed
 
 ### 1. Clone and install dependencies
@@ -193,6 +209,120 @@ The default high-FRP threshold is 10 MW. Configure the following with environmen
 
 ---
 
+## 🌐 API (FastAPI)
+
+The API connects to the database created by the pipeline and serves the trained
+model. Start it with:
+
+```bash
+pip install -r requirements.txt
+uvicorn api.main:app --reload --port 8000
+```
+
+Then open:
+
+- `http://localhost:8000/` – interactive map frontend
+- `http://localhost:8000/docs` – Swagger UI (OpenAPI)
+- `http://localhost:8000/health` – backend, model and data status
+
+### Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | Service status: data backend, model, weather coverage, fire date range |
+| GET | `/api/v1/model` | Model metadata: features, target, thresholds |
+| GET | `/api/v1/fires` | Paginated fire detections. Filters: `start_date`, `end_date`, `bbox=min_lon,min_lat,max_lon,max_lat`, `source` (repeatable), `min_confidence`, `min_frp`, `max_frp`, `daynight`, `order`, `limit`, `offset`. Add `predict=true` to attach predictions and `include_total=true` for a total count |
+| GET | `/api/v1/fires/geojson` | Same filters, returned as a GeoJSON `FeatureCollection` with predicted severity per point (for maps) |
+| GET | `/api/v1/fires/stats` | Totals and per-day / per-satellite / day-night aggregates for the filtered fires |
+| GET | `/api/v1/fires/date-range` | Earliest and latest acquisition dates |
+| GET | `/api/v1/weather` | NASA POWER observations used for enrichment |
+| POST | `/api/v1/predict` | Score one detection (JSON body, see below) |
+| POST | `/api/v1/predict/batch` | Score up to 5 000 detections at once |
+
+Example prediction:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/predict \
+  -H "Content-Type: application/json" \
+  -d '{"latitude": 30.05, "longitude": 31.2, "acq_date": "2025-01-15", "acq_time": 1130,
+       "brightness": 325.4, "confidence": 80, "scan": 1.1, "track": 1.0, "type": 0}'
+```
+
+```json
+{
+  "high_frp_probability": 0.1432,
+  "is_high_frp": false,
+  "predicted_label": "normal_frp",
+  "decision_threshold": 0.5,
+  "high_frp_threshold_mw": 10.0,
+  "weather": {"matched": true, "supplied": false, "distance_km": 20.04,
+              "rh2m": 44.26, "prectotcorr": 0.0, "gwettop": 0.16}
+}
+```
+
+Weather features are matched exactly as during training: the nearest same-day
+NASA POWER record within `MAX_WEATHER_DISTANCE_KM`. If none exists the
+response reports `"matched": false` and the model's median imputer fills the
+gap. Callers may also pass `rh2m`, `prectotcorr` and `gwettop` directly.
+
+### Data backends
+
+`DATA_BACKEND` in `.env` controls where the API reads from:
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | Use PostgreSQL when it is reachable, otherwise fall back to the cleaned CSV files |
+| `postgres` | Require PostgreSQL (`fire_events`, `weather_data`) |
+| `csv` | Serve from `cleaned_data/` without a database |
+
+The CSV backend loads `cleaned_data/fires_sample.csv` when present (a uniform
+random sample of the full dataset; build it with
+`python -m api.tools_make_sample --rows 300000`), otherwise the first
+`CSV_MAX_ROWS` rows of `cleaned_master_fires.csv`. `/health` reports
+`is_subset: true` in that case.
+
+For interactive queries on the full `fire_events` table, create the supporting
+indexes once with `python -m api.tools_create_indexes`.
+
+### Logging
+
+Every request is logged with method, path, status, latency and a request id
+(also returned in the `X-Request-ID` header) to `logs/api.log`, which rotates
+at 5 MB. Uvicorn server logs go to the same file.
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The tests run the API on a tiny in-memory dataset through the CSV backend and
+exercise the SQL repository against SQLite, so no database is required.
+
+---
+
+## 🗺️ Frontend (Leaflet map)
+
+The API serves `frontend/` at `/`. The page shows fire detections for a date
+range and area, coloured by predicted severity (or by probability, observed
+FRP, or satellite), with:
+
+- Filters for date range, satellite source, confidence, FRP, day/night and the
+  current map view.
+- Summary cards, a detections-per-day chart with the high-FRP share, and a
+  per-satellite breakdown from `/api/v1/fires/stats`.
+- Popups with the detection's attributes, predicted probability and whether
+  weather was matched.
+- A **Predict severity** panel: click the map to pick a location, adjust the
+  detection values and get a live prediction from `/api/v1/predict`.
+
+Basemaps (Esri dark/satellite, OpenStreetMap) need no API key. Set
+`SERVE_FRONTEND=0` to run the API without the UI, and `CORS_ORIGINS` if the
+frontend is hosted elsewhere.
+
+---
+
 ## ✅ Verify the Load
 
 ```sql
@@ -216,6 +346,9 @@ SELECT ST_AsText(geom) FROM fire_events LIMIT 5;
 | Validation is not running again | Delete `cleaned_data/.fire_validated.flag` |
 | Unclear failure | Check `logs/pipeline.log` |
 | Model finds no matching weather | Ensure weather rows include `date`, `latitude`, `longitude`, and rerun extraction, transformation, and loading |
+| API starts with `backend: csv` although PostgreSQL exists | Check `.env` credentials; with `DATA_BACKEND=auto` the API falls back to CSV when the connection fails (see `logs/api.log`) |
+| API queries are slow on the full table | Run `python -m api.tools_create_indexes` once |
+| Predictions report `"matched": false` | No NASA POWER record for that date within `MAX_WEATHER_DISTANCE_KM`; extend weather coverage (see roadmap) |
 
 ---
 
@@ -235,11 +368,11 @@ SELECT ST_AsText(geom) FROM fire_events LIMIT 5;
 
 **Next steps** (built on the current pipeline infrastructure)
 
-- [ ] Build a lightweight FastAPI service that connects to the database and serves predictions from the trained model
-- [ ] Extend logging to the API layer
+- [x] Build a lightweight FastAPI service that connects to the database and serves predictions from the trained model
+- [x] Extend logging to the API layer
+- [x] Build a frontend with interactive maps (Leaflet.js) showing fire locations and predicted severity
 - [ ] Containerize the project with Docker
 - [ ] Build a Power BI dashboard on top of the stored data
-- [ ] Build a frontend with interactive maps (Leaflet.js / Folium) showing fire locations and predicted severity
 
 **Future ideas**
 
