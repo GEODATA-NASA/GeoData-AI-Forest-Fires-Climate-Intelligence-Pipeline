@@ -55,24 +55,56 @@ def normalize_weather_frame(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 class WeatherIndex:
-    """Per-day BallTree indexes over weather observations."""
+    """Per-day BallTree indexes over weather observations.
+
+    Only compact per-day arrays are kept (coordinates in degrees and feature
+    values as float32); the input frame is not retained, so a global year of
+    weather (millions of rows) stays a few hundred megabytes at most.
+    """
 
     def __init__(self, weather: pd.DataFrame, max_distance_km: float):
-        self.weather = normalize_weather_frame(weather)
+        frame = normalize_weather_frame(weather)
         self.max_distance_km = float(max_distance_km)
         self.features = [
             name
             for name in WEATHER_FEATURES
-            if name in self.weather.columns and self.weather[name].notna().any()
+            if name in frame.columns and frame[name].notna().any()
         ]
+        self._rows = len(frame)
         self._trees: dict[pd.Timestamp, tuple[BallTree, np.ndarray]] = {}
-        for day, daily in self.weather.groupby("date", sort=True):
-            coordinates = np.radians(daily[["latitude", "longitude"]].to_numpy(dtype=float))
-            values = daily[self.features].to_numpy(dtype=float) if self.features else np.empty((len(daily), 0))
-            self._trees[pd.Timestamp(day)] = (BallTree(coordinates, metric="haversine"), values)
+        self._points: dict[pd.Timestamp, np.ndarray] = {}
+        frame = frame.sort_values("date", kind="stable")
+        day_values = frame["date"].to_numpy()
+        coordinates_deg = frame[["latitude", "longitude"]].to_numpy(dtype=float)
+        values_all = frame[self.features].to_numpy(dtype=np.float32) if self.features else np.empty((len(frame), 0), np.float32)
+        boundaries = np.flatnonzero(day_values[1:] != day_values[:-1]) + 1
+        for start, stop in zip(np.r_[0, boundaries], np.r_[boundaries, len(frame)]):
+            if stop <= start:
+                continue
+            day = pd.Timestamp(day_values[start])
+            self._trees[day] = (BallTree(np.radians(coordinates_deg[start:stop]), metric="haversine"), values_all[start:stop])
+            self._points[day] = coordinates_deg[start:stop].astype(np.float32)
 
     def __len__(self) -> int:
-        return len(self.weather)
+        return self._rows
+
+    def rows(self, start: date | None = None, end: date | None = None, limit: int = 5_000) -> pd.DataFrame:
+        """Observations between two dates (inclusive), oldest first, at most ``limit`` rows."""
+        pieces, remaining = [], int(limit)
+        for day, (_tree, values) in self._trees.items():
+            if remaining <= 0:
+                break
+            if (start and day.date() < start) or (end and day.date() > end):
+                continue
+            points = self._points[day][:remaining]
+            piece = pd.DataFrame({"date": day, "latitude": points[:, 0].astype(float).round(4), "longitude": points[:, 1].astype(float).round(4)})
+            for column, feature in enumerate(self.features):
+                piece[feature] = values[: len(points), column].astype(float).round(3)
+            pieces.append(piece)
+            remaining -= len(piece)
+        if not pieces:
+            return pd.DataFrame(columns=["date", "latitude", "longitude", *self.features])
+        return pd.concat(pieces, ignore_index=True)
 
     @property
     def dates(self) -> list[pd.Timestamp]:
@@ -88,7 +120,8 @@ class WeatherIndex:
     def summary(self) -> dict:
         start, end = self.date_range
         return {
-            "observations": len(self.weather),
+            "observations": self._rows,
+            "points_per_day": int(max((len(v) for v in self._points.values()), default=0)),
             "dates": len(self._trees),
             "start_date": start.isoformat() if start else None,
             "end_date": end.isoformat() if end else None,
@@ -130,7 +163,7 @@ class WeatherIndex:
                 continue
             matched_index = pd.Index(positions)[within]
             for column, feature in enumerate(self.features):
-                result.loc[matched_index, feature] = values[nearest[within], column]
+                result.loc[matched_index, feature] = np.round(values[nearest[within], column].astype(float), 4)
             result.loc[matched_index, "weather_distance_km"] = distances[within] * EARTH_RADIUS_KM
 
         result["weather_matched"] = result["weather_distance_km"].notna()
