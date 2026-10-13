@@ -158,12 +158,19 @@ def transform_fire_data(collect_data=True):
 
 def transform_weather_data():
     output_path = os.path.join(CLEANED_DATA_DIR, "cleaned_weather.csv")
-    if os.path.isfile(output_path):
+    raw_is_newer = (
+        os.path.isfile(output_path)
+        and os.path.isfile(WEATHER_FILE)
+        and os.path.getmtime(WEATHER_FILE) > os.path.getmtime(output_path)
+    )
+    if os.path.isfile(output_path) and not raw_is_newer:
         print(f"Using existing cleaned weather data: {output_path}")
         weather_df = pd.read_csv(output_path)
         if weather_df.empty:
             raise ValueError(f"Cleaned weather data contains no rows: {output_path}")
         return weather_df
+    if raw_is_newer:
+        print("The raw NASA POWER file changed since it was cleaned; cleaning it again.")
 
     print("Processing and cleaning weather and climate data (NASA POWER)...")
     if not os.path.exists(WEATHER_FILE):
@@ -171,14 +178,20 @@ def transform_weather_data():
 
     weather_df = pd.read_csv(WEATHER_FILE)
 
-    # Clean weather data (remove missing values and sort dates)
-    weather_df = weather_df.dropna()
+    # Clean weather data: drop incomplete rows and turn POWER's -999 fill value
+    # into missing values, then drop rows where every climate value is missing.
+    weather_df = weather_df.dropna(subset=[c for c in ("date", "latitude", "longitude") if c in weather_df.columns])
+    climate = [c for c in ("RH2M", "PRECTOTCORR", "GWETTOP") if c in weather_df.columns]
+    weather_df[climate] = weather_df[climate].mask(weather_df[climate] <= -999)
+    weather_df = weather_df.dropna(subset=climate, how="all")
     if weather_df.empty:
         raise ValueError(f"NASA POWER weather data contains no usable rows: {WEATHER_FILE}")
 
     os.makedirs(CLEANED_DATA_DIR, exist_ok=True)
-    weather_df.to_csv(output_path, index=False)
-    print(f"Weather data cleaned and saved to: {output_path}")
+    temp_path = output_path + ".tmp"
+    weather_df.to_csv(temp_path, index=False)
+    os.replace(temp_path, output_path)
+    print(f"Weather data cleaned and saved to: {output_path} ({len(weather_df):,} rows)")
     return weather_df
 
 

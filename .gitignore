@@ -55,3 +55,6 @@ logs/
 
 # Pytest
 .pytest_cache/
+
+# Airflow validation venv (Airflow itself runs in Docker)
+.venv-airflow/

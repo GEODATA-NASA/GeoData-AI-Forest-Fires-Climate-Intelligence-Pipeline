@@ -480,6 +480,114 @@
     setTimeout(() => map.invalidateSize(), 400);
   }
 
+  // ------------------------------------------------------------- assistant
+  const TOOL_LABELS = {
+    get_data_coverage: "Data coverage",
+    get_fire_statistics: "Fire statistics",
+    list_fires: "Detections",
+    predict_fire_severity: "Model score",
+    get_model_info: "Model details",
+    search_project_docs: "Project docs",
+  };
+  const escapeHtml = (text) => text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  // Small, safe Markdown subset: paragraphs, bullet and numbered lists, bold, inline code.
+  function renderMarkdown(text) {
+    const inline = (line) => escapeHtml(line).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
+    const out = [];
+    let list = null;
+    const close = () => { if (list) { out.push(`</${list}>`); list = null; } };
+    for (const raw of text.split(/\n/)) {
+      const line = raw.trimEnd();
+      const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
+      const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      if (bullet || numbered) {
+        const kind = bullet ? "ul" : "ol";
+        if (list !== kind) { close(); out.push(`<${kind}>`); list = kind; }
+        out.push(`<li>${inline((bullet || numbered)[1])}</li>`);
+      } else if (!line.trim()) {
+        close();
+      } else {
+        close();
+        const heading = line.match(/^#{1,6}\s+(.*)$/);
+        out.push(heading ? `<p><strong>${inline(heading[1])}</strong></p>` : `<p>${inline(line)}</p>`);
+      }
+    }
+    close();
+    return out.join("");
+  }
+  function lookupLabel(call) {
+    const label = TOOL_LABELS[call.name] || call.name;
+    const i = call.input || {};
+    if (i.start_date && i.end_date) return `${label}, ${dateLabel(i.start_date)} to ${dateLabel(i.end_date)}${i.bbox ? ", area" : ""}`;
+    if (i.query) return `${label}: “${i.query}”`;
+    return label;
+  }
+
+  const ask = { history: [], busy: false, enabled: true };
+  async function loadAssistantStatus() {
+    try {
+      const status = await getJSON("/api/v1/ask/status");
+      ask.enabled = status.enabled;
+      if (!status.enabled) {
+        const note = el("ask-status");
+        note.textContent = status.reason || "The assistant is not available.";
+        note.hidden = false;
+        el("ask-input").disabled = true;
+        el("ask-btn").disabled = true;
+        el("ask-suggestions").hidden = true;
+      }
+    } catch (_) { /* leave it enabled; problems surface when a question is sent */ }
+  }
+  function appendTurn(question) {
+    const turn = document.createElement("div");
+    turn.className = "turn";
+    turn.innerHTML = '<p class="turn-question"></p><div class="turn-answer pending">Looking it up<span class="typing" aria-hidden="true"><span></span><span></span><span></span></span></div><div class="lookups"></div>';
+    turn.querySelector(".turn-question").textContent = question;
+    el("ask-thread").appendChild(turn);
+    tween({ targets: turn, opacity: [0, 1], translateY: [8, 0], duration: 320, easing: "easeOutCubic" });
+    if (MOTION) anime({ targets: turn.querySelectorAll(".typing span"), translateY: [0, -3, 0], duration: 900, delay: anime.stagger(120), loop: true, easing: "easeInOutSine" });
+    turn.scrollIntoView({ behavior: MOTION ? "smooth" : "auto", block: "nearest" });
+    return turn;
+  }
+  async function submitQuestion(question) {
+    question = question.trim();
+    if (question.length < 2 || ask.busy || !ask.enabled) return;
+    ask.busy = true;
+    setBusy("ask-btn", true, "Thinking", "Ask");
+    el("ask-input").value = "";
+    el("ask-suggestions").hidden = true;
+    const turn = appendTurn(question);
+    const answerNode = turn.querySelector(".turn-answer");
+    try {
+      const result = await postJSON("/api/v1/ask", { question, history: ask.history.slice(-10) });
+      answerNode.classList.remove("pending");
+      answerNode.innerHTML = renderMarkdown(result.answer || "No answer was returned.");
+      turn.querySelector(".lookups").innerHTML = result.tool_calls.map((call) => `<span class="lookup${call.ok ? "" : " err"}">${escapeHtml(lookupLabel(call))}</span>`).join("");
+      tween({ targets: answerNode, opacity: [0, 1], duration: 260, easing: "easeOutCubic" });
+      ask.history.push({ role: "user", content: question }, { role: "assistant", content: result.answer || "" });
+      el("ask-reset").hidden = false;
+    } catch (error) {
+      answerNode.classList.remove("pending");
+      answerNode.classList.add("failed");
+      answerNode.textContent = `No answer. ${error.message}`;
+    } finally {
+      if (MOTION) anime.remove(turn.querySelectorAll(".typing span"));
+      ask.busy = false;
+      setBusy("ask-btn", false, "Thinking", "Ask");
+      el("ask-input").focus();
+    }
+  }
+  el("ask-form").addEventListener("submit", (e) => { e.preventDefault(); submitQuestion(el("ask-input").value); });
+  el("ask-input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitQuestion(el("ask-input").value); } });
+  document.querySelectorAll(".suggestion").forEach((button) => button.addEventListener("click", () => submitQuestion(button.textContent)));
+  el("ask-reset").addEventListener("click", () => {
+    ask.history = [];
+    el("ask-thread").innerHTML = "";
+    el("ask-reset").hidden = true;
+    el("ask-suggestions").hidden = !ask.enabled;
+    el("ask-input").focus();
+  });
+
   // ------------------------------------------------------------------ init
   el("filter-form").addEventListener("submit", (e) => { e.preventDefault(); loadFires(); });
   el("reset-btn").addEventListener("click", () => { resetFilters(); loadFires(); });
@@ -498,5 +606,5 @@
   applyTheme(checkedValue("palette"), checkedValue("appearance"), false);
   setPin(30.05, 31.2, false);
   enterSections();
-  loadHealth().then((health) => { resetFilters(); if (health && health.status !== "degraded") loadFires(); loadModelNotes(); });
+  loadHealth().then((health) => { resetFilters(); if (health && health.status !== "degraded") loadFires(); loadModelNotes(); loadAssistantStatus(); });
 })();

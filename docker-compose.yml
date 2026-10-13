@@ -87,5 +87,40 @@ services:
     restart: unless-stopped
     profiles: ["scheduled"]
 
+  # Airflow in standalone mode (scheduler, API server and DAG processor in one
+  # container, SQLite metadata). Fine for a single machine; for production use
+  # the official multi-container Airflow compose file with the same DAG folder.
+  #   docker compose --profile airflow up -d   ->  http://localhost:8080
+  # The admin password is printed in the container log on first start.
+  airflow:
+    build:
+      context: .
+      dockerfile: orchestration/airflow.Dockerfile
+    image: geodata-airflow:latest
+    container_name: geodata-airflow
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      GEODATA_HOME: /opt/geodata
+      GEODATA_API_URL: http://api:8000
+      GEODATA_SCHEDULE: ${GEODATA_SCHEDULE:-@daily}
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/geodata/orchestration/dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      PYTHONPATH: /opt/geodata
+    volumes:
+      - .:/opt/geodata
+      - airflow-home:/opt/airflow
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    user: "${AIRFLOW_UID:-50000}:0"   # set AIRFLOW_UID=$(id -u) on Linux so files written to the repo stay yours
+    command: ["standalone"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles: ["airflow"]
+
 volumes:
   pgdata:
+  airflow-home:
