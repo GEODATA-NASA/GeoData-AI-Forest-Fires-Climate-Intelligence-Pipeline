@@ -333,3 +333,13 @@ body.panel-hidden .leaflet-top.leaflet-left { left: 16px; }
 .pop-action { display: block; width: 100%; margin-top: 10px; border: 0; border-radius: 999px; min-height: 34px; padding: 0 12px; font: inherit; font-size: 12.5px; font-weight: 700; background: var(--accent); color: var(--on-accent); cursor: pointer; transition: transform var(--ease-duration) var(--ease), background 120ms; }
 .pop-action:hover { background: var(--accent-press); }
 .pop-action:active { transform: scale(0.97); }
+
+.caution { margin: 0 0 12px; padding: 10px 12px; border-radius: var(--radius-s); background: var(--surface-2); color: var(--text); font-size: 12.5px; border-left: 3px solid var(--severity-normal); }
+.model-notes { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--hairline); }
+.model-notes h3 { font-size: 13px; font-weight: 700; color: var(--text-2); margin: 0 0 10px; }
+.importances { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 12px; }
+.importances li { display: grid; grid-template-columns: 96px 1fr 44px; align-items: center; gap: 10px; }
+.importances .bar { height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.importances .bar span { display: block; height: 100%; background: var(--text-2); transform-origin: left; transform: scaleX(0); }
+.importances .pct { color: var(--text-2); text-align: right; font-variant-numeric: tabular-nums; }
+.model-extent { margin-top: 10px; font-size: 12px; color: var(--text-2); }

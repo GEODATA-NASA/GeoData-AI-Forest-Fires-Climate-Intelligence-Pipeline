@@ -4,6 +4,18 @@ The label is based on observed FRP, so this predicts event severity for an
 already detected fire; it does not predict fire occurrence. Weather observations
 must include date, latitude, and longitude to prevent invalid spatial/temporal
 joins.
+
+Environment switches (see README):
+
+* ``REQUIRE_WEATHER_MATCH`` (default 1): keep only fires matched to a same-day
+  weather record. Set to 0 to train on every detection; unmatched rows get NaN
+  weather which the pipeline's imputer fills. Use this when weather coverage is
+  much smaller than fire coverage, otherwise the model only learns one region.
+* ``TRAINING_SOURCE`` (default db): ``csv`` trains from ``cleaned_data/`` without
+  PostgreSQL (``FIRES_SAMPLE_FILE`` is used when present).
+* ``MODEL_ARTIFACT_PATH``: where to save the model.
+* ``RF_N_ESTIMATORS`` / ``RF_MIN_SAMPLES_LEAF`` / ``RF_MAX_DEPTH`` (200 / 20 / 18):
+  forest size; ``RF_MAX_DEPTH=0`` means unlimited.
 """
 
 import logging
@@ -35,14 +47,22 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from config import DB_CONFIG
+from config import CLEANED_DATA_DIR, DB_CONFIG
 
 LOGGER = logging.getLogger("geodata.model")
-MODEL_ARTIFACT_PATH = (
-    Path(__file__).resolve().parent
-    / "artifacts"
-    / "high_frp_classifier.joblib"
+MODEL_ARTIFACT_PATH = Path(
+    os.getenv(
+        "MODEL_ARTIFACT_PATH",
+        Path(__file__).resolve().parent / "artifacts" / "high_frp_classifier.joblib",
+    )
 )
+REQUIRE_WEATHER_MATCH = os.getenv("REQUIRE_WEATHER_MATCH", "1").lower() not in {"0", "false", "no"}
+TRAINING_SOURCE = os.getenv("TRAINING_SOURCE", "db").strip().lower()
+# Forest size. Small leaves on hundreds of thousands of rows produce artifacts of
+# a gigabyte or more; the defaults below keep the file in the tens of megabytes.
+RF_N_ESTIMATORS = int(os.getenv("RF_N_ESTIMATORS", "200"))
+RF_MIN_SAMPLES_LEAF = int(os.getenv("RF_MIN_SAMPLES_LEAF", "20"))
+RF_MAX_DEPTH = int(os.getenv("RF_MAX_DEPTH", "18")) or None
 EARTH_RADIUS_KM = 6371.0088
 FIRE_CHUNK_SIZE = int(os.getenv("FIRE_CHUNK_SIZE", "100000"))
 MAX_TRAINING_ROWS = int(os.getenv("MAX_TRAINING_ROWS", "500000"))
@@ -163,9 +183,42 @@ def load_weather(engine, schema):
         f"{quote_identifier(engine, schema)}.{quote_identifier(engine, 'weather_data')}"
     )
     weather = pd.read_sql_query(query, engine)
+    return build_weather_indexes(weather, list(feature_names.keys()))
+
+
+def load_weather_csv(path):
+    """CSV counterpart of ``load_weather`` for training without a database."""
+    raw = pd.read_csv(path)
+    columns = {str(name).strip().lower(): name for name in raw.columns}
+    date_name = next((columns[n] for n in ("date", "acq_date", "time", "date_key") if n in columns), None)
+    latitude_name = next((columns[n] for n in ("latitude", "lat") if n in columns), None)
+    longitude_name = next((columns[n] for n in ("longitude", "lon", "lng") if n in columns), None)
+    if None in (date_name, latitude_name, longitude_name):
+        raise ValueError(f"{path} needs date, latitude and longitude columns.")
+    weather = pd.DataFrame(
+        {
+            "weather_date": raw[date_name],
+            "weather_latitude": raw[latitude_name],
+            "weather_longitude": raw[longitude_name],
+        }
+    )
+    features = []
+    for lower, original in columns.items():
+        canonical = WEATHER_ALIASES.get(lower)
+        if canonical and canonical not in weather.columns:
+            weather[canonical] = raw[original]
+            features.append(canonical)
+    if not features:
+        raise ValueError(f"{path} has no recognized climate columns (RH2M, PRECTOTCORR, GWETTOP).")
+    return build_weather_indexes(weather, features)
+
+
+def build_weather_indexes(weather, feature_names):
+    """Validate a canonical weather frame and build per-day BallTree indexes."""
+    weather = weather.copy()
     weather["weather_date"] = canonical_date(weather["weather_date"])
 
-    numeric_columns = ["weather_latitude", "weather_longitude", *feature_names.keys()]
+    numeric_columns = ["weather_latitude", "weather_longitude", *feature_names]
     for column in numeric_columns:
         weather[column] = pd.to_numeric(weather[column], errors="coerce")
     weather[numeric_columns] = weather[numeric_columns].replace(-999, np.nan)
@@ -231,6 +284,35 @@ def load_fire_chunks(engine, schema):
     return pd.read_sql_query(query, engine, chunksize=FIRE_CHUNK_SIZE)
 
 
+def csv_fire_columns():
+    """Column map for the CSV training source (mirrors ``table_columns``)."""
+    header = pd.read_csv(csv_fire_path(), nrows=0).columns
+    return {str(name).strip().lower(): name for name in header}
+
+
+def csv_fire_path():
+    sample = Path(os.getenv("FIRES_SAMPLE_FILE", Path(CLEANED_DATA_DIR) / "fires_sample.csv"))
+    full = Path(os.getenv("FIRES_CSV_FILE", Path(CLEANED_DATA_DIR) / "cleaned_master_fires.csv"))
+    path = sample if sample.is_file() else full
+    if not path.is_file():
+        raise FileNotFoundError(f"No cleaned fire CSV found: {sample} or {full}")
+    return path
+
+
+def load_fire_chunks_csv():
+    columns = csv_fire_columns()
+    required = ("latitude", "longitude", "acq_date", "frp")
+    missing = [name for name in required if name not in columns]
+    if missing:
+        raise ValueError(f"Fire CSV is missing required columns: {', '.join(missing)}.")
+    selected = [columns[n] for n in required] + [
+        columns[n] for n in ("brightness", "confidence", "scan", "track", "type", "acq_time") if n in columns
+    ]
+    for chunk in pd.read_csv(csv_fire_path(), usecols=selected, chunksize=FIRE_CHUNK_SIZE, low_memory=False):
+        chunk.columns = [str(c).strip().lower() for c in chunk.columns]
+        yield chunk
+
+
 def match_weather(fires, weather_indexes, weather_features):
     """Attach nearest same-day weather values within the configured radius."""
     fires = fires.copy().reset_index(drop=True)
@@ -269,7 +351,9 @@ def match_weather(fires, weather_indexes, weather_features):
 
     fires[weather_features] = weather_values
     fires["_weather_distance_km"] = distance_km
-    return fires.loc[np.isfinite(distance_km)].copy()
+    if REQUIRE_WEATHER_MATCH:
+        return fires.loc[np.isfinite(distance_km)].copy()
+    return fires
 
 
 def make_training_sample(engine, schema, weather_indexes, weather_features):
@@ -278,16 +362,21 @@ def make_training_sample(engine, schema, weather_indexes, weather_features):
     sample = pd.DataFrame()
     matched_rows = 0
     total_rows = 0
-    fire_columns = table_columns(engine, "fire_events", schema)
+    if engine is None:
+        fire_columns = csv_fire_columns()
+        chunks = load_fire_chunks_csv()
+    else:
+        fire_columns = table_columns(engine, "fire_events", schema)
+        chunks = load_fire_chunks(engine, schema)
     feature_columns = [
         column
         for column in FIRE_FEATURES
         if column == "day_of_year" or column in fire_columns
     ]
-    for chunk in load_fire_chunks(engine, schema):
+    for chunk in chunks:
         total_rows += len(chunk)
         merged = match_weather(chunk, weather_indexes, weather_features)
-        matched_rows += len(merged)
+        matched_rows += int(np.isfinite(merged["_weather_distance_km"]).sum()) if len(merged) else 0
         if merged.empty:
             continue
 
@@ -298,7 +387,7 @@ def make_training_sample(engine, schema, weather_indexes, weather_features):
             feature for feature in weather_features if feature not in feature_columns
         )
 
-        selected = merged[feature_columns + ["_date", "frp"]].copy()
+        selected = merged[feature_columns + ["_date", "frp", "_weather_distance_km"]].copy()
         selected = selected.replace([np.inf, -np.inf], np.nan)
         selected = selected.dropna(subset=["_date", "frp"])
         if selected.empty:
@@ -326,11 +415,30 @@ def make_training_sample(engine, schema, weather_indexes, weather_features):
             "coordinates, then increase MAX_WEATHER_DISTANCE_KM if appropriate."
         )
     LOGGER.info(
-        "Using %s rows for training; high-FRP threshold is %.2f MW.",
+        "Using %s rows for training (%s with matched weather); high-FRP threshold is %.2f MW.",
         len(sample),
+        int(np.isfinite(sample["_weather_distance_km"]).sum()),
         HIGH_FRP_THRESHOLD,
     )
     return sample.drop(columns="_priority"), feature_columns
+
+
+def training_extent(data):
+    """Where and when the training rows come from; saved with the model so the
+    API can warn when a prediction falls outside what the model has seen."""
+    matched = np.isfinite(data["_weather_distance_km"])
+    return {
+        "rows": int(len(data)),
+        "rows_with_weather": int(matched.sum()),
+        "require_weather_match": REQUIRE_WEATHER_MATCH,
+        "latitude_min": float(data["latitude"].min()),
+        "latitude_max": float(data["latitude"].max()),
+        "longitude_min": float(data["longitude"].min()),
+        "longitude_max": float(data["longitude"].max()),
+        "start_date": str(pd.Timestamp(data["_date"].min()).date()),
+        "end_date": str(pd.Timestamp(data["_date"].max()).date()),
+        "high_frp_share": float(data["target"].mean()),
+    }
 
 
 def temporal_split(data):
@@ -365,8 +473,9 @@ def train_and_evaluate(data, feature_columns):
             (
                 "classifier",
                 RandomForestClassifier(
-                    n_estimators=300,
-                    min_samples_leaf=2,
+                    n_estimators=RF_N_ESTIMATORS,
+                    min_samples_leaf=RF_MIN_SAMPLES_LEAF,
+                    max_depth=RF_MAX_DEPTH,
                     class_weight="balanced_subsample",
                     random_state=42,
                     n_jobs=-1,
@@ -377,6 +486,16 @@ def train_and_evaluate(data, feature_columns):
     model.fit(train[feature_columns], train["target"])
     predictions = model.predict(test[feature_columns])
     probabilities = model.predict_proba(test[feature_columns])[:, 1]
+    metrics = {
+        "accuracy": float(accuracy_score(test["target"], predictions)),
+        "precision": float(precision_score(test["target"], predictions, zero_division=0)),
+        "recall": float(recall_score(test["target"], predictions, zero_division=0)),
+        "f1": float(f1_score(test["target"], predictions, zero_division=0)),
+        "roc_auc": float(roc_auc_score(test["target"], probabilities)),
+        "test_rows": int(len(test)),
+        "train_rows": int(len(train)),
+        "test_period_start": str(pd.Timestamp(cutoff).date()),
+    }
 
     LOGGER.info("Chronological test period begins %s.", pd.Timestamp(cutoff).date())
     LOGGER.info(
@@ -418,8 +537,19 @@ def train_and_evaluate(data, feature_columns):
             "weather_features": [
                 feature for feature in feature_columns if feature in WEATHER_ALIASES.values()
             ],
+            "feature_importances": {feature: float(value) for feature, value in importance_report},
+            "metrics": metrics,
+            "training_extent": training_extent(data),
+            "high_frp_threshold_mw": HIGH_FRP_THRESHOLD,
+            "max_weather_distance_km": MAX_WEATHER_DISTANCE_KM,
+            "hyperparameters": {
+                "n_estimators": RF_N_ESTIMATORS,
+                "min_samples_leaf": RF_MIN_SAMPLES_LEAF,
+                "max_depth": RF_MAX_DEPTH,
+            },
         },
         output_path,
+        compress=3,
     )
     LOGGER.info("Saved trained model to %s", output_path)
 
@@ -444,10 +574,15 @@ def main():
     schema = os.getenv("DB_SCHEMA", "public")
     engine = None
     try:
-        engine = get_database_engine()
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        weather_indexes, weather_features = load_weather(engine, schema)
+        if TRAINING_SOURCE == "csv":
+            LOGGER.info("Training from the cleaned CSV files (TRAINING_SOURCE=csv).")
+            weather_csv = Path(os.getenv("WEATHER_CSV_FILE", Path(CLEANED_DATA_DIR) / "cleaned_weather.csv"))
+            weather_indexes, weather_features = load_weather_csv(weather_csv)
+        else:
+            engine = get_database_engine()
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+            weather_indexes, weather_features = load_weather(engine, schema)
         sample, feature_columns = make_training_sample(
             engine, schema, weather_indexes, weather_features
         )
@@ -463,7 +598,7 @@ def main():
             "DB_SCHEMA, and table names."
         )
         return 1
-    except (ValueError, KeyError, TypeError) as error:
+    except (ValueError, KeyError, TypeError, FileNotFoundError) as error:
         LOGGER.error("%s", error)
         return 1
     finally:

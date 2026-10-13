@@ -66,7 +66,10 @@ def model_info(request: Request) -> ModelInfo:
             high_frp_threshold_mw=settings.high_frp_threshold_mw,
             decision_threshold=settings.decision_threshold,
         )
-    return ModelInfo(**predictor.info())
+    info = predictor.info()
+    if info.get("feature_importances"):
+        info["feature_importances"] = dict(sorted(info["feature_importances"].items(), key=lambda item: -item[1]))
+    return ModelInfo(**info)
 
 
 @router.post("/api/v1/refresh", response_model=RefreshResponse, summary="Rebuild caches after new data was loaded")

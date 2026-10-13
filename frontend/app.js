@@ -379,6 +379,26 @@
       setLoading(false);
     }
   }
+  const FEATURE_LABELS = { latitude: "Latitude", longitude: "Longitude", brightness: "Brightness", confidence: "Confidence", scan: "Scan (pixel)", track: "Track (pixel)", type: "Type", acq_time: "Time of day", day_of_year: "Day of year", rh2m: "Humidity", prectotcorr: "Precipitation", gwettop: "Soil wetness" };
+  async function loadModelNotes() {
+    try {
+      const info = await getJSON("/api/v1/model");
+      state.model = info;
+      const notes = el("model-notes");
+      if (!info.loaded) { notes.hidden = true; return; }
+      const imp = Object.entries(info.feature_importances || {}).slice(0, 6);
+      const max = imp.length ? imp[0][1] : 1;
+      el("importance-list").innerHTML = imp.map(([k, v]) => `<li><span>${FEATURE_LABELS[k] || k}</span><span class="bar"><span data-w="${v / max}"></span></span><span class="pct">${(v * 100).toFixed(0)}%</span></li>`).join("");
+      const ext = info.training_extent;
+      const rows = ext ? fmt.format(ext.rows) : null;
+      el("model-extent").textContent = ext
+        ? `Trained on ${rows} detections from ${dateLabel(ext.start_date)} to ${dateLabel(ext.end_date)}, latitudes ${ext.latitude_min.toFixed(1)} to ${ext.latitude_max.toFixed(1)} and longitudes ${ext.longitude_min.toFixed(1)} to ${ext.longitude_max.toFixed(1)}${ext.rows_with_weather != null ? `, ${fmt.format(ext.rows_with_weather)} with matched weather` : ""}. Scores outside that range are extrapolations.`
+        : "This model artifact does not record where or when it was trained, so scores far from the weather stations may be extrapolations.";
+      notes.hidden = false;
+      notes.querySelectorAll(".bar span").forEach((bar, i) => tween({ targets: bar, scaleX: [0, Number(bar.dataset.w)], duration: 500, delay: 80 * i, easing: "easeOutCubic" }));
+    } catch (_) { /* notes are optional */ }
+  }
+
   async function loadHealth() {
     const pill = el("status-pill"), text = el("status-text");
     try {
@@ -420,6 +440,13 @@
       el("result-label").textContent = result.is_high_frp ? "Likely a severe fire" : "Likely a normal fire";
       el("result-sub").textContent = `Severe means ${result.high_frp_threshold_mw} MW or more. Cut‑off at ${Math.round(result.decision_threshold * 100)}%.`;
       el("result-threshold").style.left = `${result.decision_threshold * 100}%`;
+      const caution = el("result-caution");
+      if (result.in_training_extent === false) {
+        caution.textContent = "This place or date lies outside the data the model was trained on, so the score is an extrapolation and will look flat across large areas.";
+        caution.hidden = false;
+      } else {
+        caution.hidden = true;
+      }
       const w = result.weather;
       const radius = (state.health && state.health.weather && state.health.weather.max_distance_km) || 100;
       const kv = [["Weather", w.matched ? `Station ${w.distance_km} km away, same day` : `No station within ${radius} km that day, values imputed`]];
@@ -471,5 +498,5 @@
   applyTheme(checkedValue("palette"), checkedValue("appearance"), false);
   setPin(30.05, 31.2, false);
   enterSections();
-  loadHealth().then((health) => { resetFilters(); if (health && health.status !== "degraded") loadFires(); });
+  loadHealth().then((health) => { resetFilters(); if (health && health.status !== "degraded") loadFires(); loadModelNotes(); });
 })();

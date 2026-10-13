@@ -193,6 +193,7 @@
             </div>
           </form>
           <div id="predict-result" class="result" hidden>
+            <p id="result-caution" class="caution" hidden></p>
             <div class="result-top">
               <div>
                 <p class="result-label" id="result-label">Normal severity</p>
@@ -202,6 +203,11 @@
             </div>
             <div class="meter" aria-hidden="true"><span id="result-meter"></span><i id="result-threshold"></i></div>
             <dl class="kv" id="result-weather"></dl>
+          </div>
+          <div id="model-notes" class="model-notes" hidden>
+            <h3>What drives the score</h3>
+            <ul id="importance-list" class="importances" aria-label="Feature importance"></ul>
+            <p id="model-extent" class="model-extent"></p>
           </div>
         </div>
       </details>
