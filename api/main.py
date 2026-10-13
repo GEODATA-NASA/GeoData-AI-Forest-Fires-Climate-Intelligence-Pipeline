@@ -26,7 +26,8 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from api.logging_config import RequestLoggingMiddleware, configure_logging  # noqa: E402
 from api.predictor import SeverityPredictor  # noqa: E402
 from api.repositories import create_repository  # noqa: E402
-from api.routers import fires, health, predict, weather  # noqa: E402
+from api.assistant.service import AssistantService  # noqa: E402
+from api.routers import assistant, fires, health, predict, weather  # noqa: E402
 from api.runtime import RuntimeData  # noqa: E402
 from api.settings import Settings, load_settings  # noqa: E402
 from api.version import __version__  # noqa: E402
@@ -41,6 +42,7 @@ database, plus **high-FRP severity predictions** from the trained RandomForest m
 * `POST /api/v1/predict` - score one detection (weather is matched automatically)
 * `POST /api/v1/predict/batch` - score many detections
 * `POST /api/v1/refresh` - rebuild caches after the pipeline loaded new data
+* `POST /api/v1/ask` - ask a question in plain language; Claude answers using the data tools
 """
 
 
@@ -76,6 +78,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             runtime.weather_index()
             runtime.date_range()
 
+        if getattr(app.state, "assistant", None) is None:  # tests may inject one
+            try:
+                app.state.assistant = AssistantService(
+                    runtime,
+                    model=settings.assistant_model,
+                    effort=settings.assistant_effort,
+                    max_rounds=settings.assistant_max_rounds,
+                    enabled=settings.assistant_enabled,
+                    use_fallbacks=settings.assistant_fallbacks,
+                )
+                logger.info("Assistant: %s", app.state.assistant.status())
+            except Exception:  # noqa: BLE001 - the rest of the API must still start
+                logger.exception("The assistant could not be initialised; /api/v1/ask will return 503.")
+                app.state.assistant = None
+
         yield
 
         logger.info("Shutting down GeoData API.")
@@ -91,6 +108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.runtime = None
+    app.state.assistant = None
 
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(
@@ -106,6 +124,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(fires.router)
     app.include_router(weather.router)
     app.include_router(predict.router)
+    app.include_router(assistant.router)
 
     if settings.serve_frontend and settings.frontend_dir.is_dir():
         app.mount("/", StaticFiles(directory=str(settings.frontend_dir), html=True), name="frontend")

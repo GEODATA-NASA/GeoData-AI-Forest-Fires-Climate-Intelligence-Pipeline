@@ -14,6 +14,7 @@ Environment switches (see README):
 * ``TRAINING_SOURCE`` (default db): ``csv`` trains from ``cleaned_data/`` without
   PostgreSQL (``FIRES_SAMPLE_FILE`` is used when present).
 * ``MODEL_ARTIFACT_PATH``: where to save the model.
+* ``FORCE_RETRAIN`` (default 0): retrain even when the artifact already exists.
 * ``RF_N_ESTIMATORS`` / ``RF_MIN_SAMPLES_LEAF`` / ``RF_MAX_DEPTH`` (200 / 20 / 18):
   forest size; ``RF_MAX_DEPTH=0`` means unlimited.
 """
@@ -63,6 +64,8 @@ TRAINING_SOURCE = os.getenv("TRAINING_SOURCE", "db").strip().lower()
 RF_N_ESTIMATORS = int(os.getenv("RF_N_ESTIMATORS", "200"))
 RF_MIN_SAMPLES_LEAF = int(os.getenv("RF_MIN_SAMPLES_LEAF", "20"))
 RF_MAX_DEPTH = int(os.getenv("RF_MAX_DEPTH", "18")) or None
+# Retrain even when an artifact exists (scheduled retraining, new weather data).
+FORCE_RETRAIN = os.getenv("FORCE_RETRAIN", "0").lower() in {"1", "true", "yes"}
 EARTH_RADIUS_KM = 6371.0088
 FIRE_CHUNK_SIZE = int(os.getenv("FIRE_CHUNK_SIZE", "100000"))
 MAX_TRAINING_ROWS = int(os.getenv("MAX_TRAINING_ROWS", "500000"))
@@ -529,6 +532,9 @@ def train_and_evaluate(data, feature_columns):
 
     output_path = MODEL_ARTIFACT_PATH
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Write to a temporary file and swap it in, so a running API never reads a
+    # half-written artifact and a failed save keeps the previous model.
+    temp_path = output_path.with_name(output_path.name + ".tmp")
     joblib.dump(
         {
             "model": model,
@@ -548,9 +554,10 @@ def train_and_evaluate(data, feature_columns):
                 "max_depth": RF_MAX_DEPTH,
             },
         },
-        output_path,
+        temp_path,
         compress=3,
     )
+    os.replace(temp_path, output_path)
     LOGGER.info("Saved trained model to %s", output_path)
 
 
@@ -559,7 +566,7 @@ def main():
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    if MODEL_ARTIFACT_PATH.is_file():
+    if MODEL_ARTIFACT_PATH.is_file() and not FORCE_RETRAIN:
         joblib.load(MODEL_ARTIFACT_PATH)
         LOGGER.info("Loaded existing model; ready at %s.", MODEL_ARTIFACT_PATH)
         return 0

@@ -18,6 +18,9 @@ An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and s
 - Structured logging to `logs/pipeline.log` for progress, warnings, and errors.
 - Keeps all credentials in environment variables, with centralized configuration.
 - **FastAPI service** (`api/`) that queries the database and serves fire detections, GeoJSON, statistics and **severity predictions** from the trained model, with request logging to `logs/api.log`.
+- **Global weather coverage**: NASA POWER humidity, precipitation and soil wetness for every place and day with fires, downloaded tile by tile from the POWER regional endpoint, resumable and cached.
+- **Airflow DAG** that runs the stages as retryable tasks, plus a dependency-free scheduler for single machines.
+- **Ask the data**: a question-answering assistant (Claude with read-only data tools and a documentation search) at `POST /api/v1/ask` and in the frontend.
 - **Interactive map frontend** (`frontend/`, Leaflet.js) showing fire locations coloured by predicted severity, daily statistics and a click-to-predict tool.
 
 ---
@@ -32,6 +35,8 @@ An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and s
 | Machine Learning | scikit-learn (RandomForestClassifier), joblib |
 | API | FastAPI, Uvicorn, Pydantic |
 | Deployment | Docker, Docker Compose (PostGIS image) |
+| Orchestration | Apache Airflow 3 (DAG), `scheduler.py` |
+| Assistant | Anthropic Claude API (`anthropic` SDK), TF-IDF retrieval over project docs |
 | Frontend | Leaflet.js, vanilla JavaScript (served by the API) |
 
 **Data sources**
@@ -90,6 +95,7 @@ GEODATA
 ├─ Dockerfile            # Image for the API and the pipeline
 ├─ docker-compose.yml    # PostGIS + API (+ pipeline / scheduler profiles)
 ├─ scheduler.py          # Reruns the pipeline on an interval
+├─ orchestration/        # Stage task functions + Airflow DAG (orchestration/dags/)
 ├─ api/                  # FastAPI service
 │  ├─ main.py            # App factory (uvicorn api.main:app)
 │  ├─ settings.py        # API settings from .env
@@ -97,7 +103,8 @@ GEODATA
 │  ├─ predictor.py       # Loads the model, builds features, matches weather
 │  ├─ weather_index.py   # Same-day nearest-station lookup (as in training)
 │  ├─ repositories/      # Data access: PostgreSQL or CSV fallback
-│  ├─ routers/           # /health, /api/v1/fires, /api/v1/weather, /api/v1/predict
+│  ├─ assistant/         # Claude Q&A: tools, knowledge base, tool loop
+│  ├─ routers/           # /health, /api/v1/fires, /api/v1/weather, /api/v1/predict, /api/v1/ask
 │  ├─ tools_make_sample.py     # Build cleaned_data/fires_sample.csv for the CSV backend
 │  └─ tools_create_indexes.py  # Create PostgreSQL indexes used by the API
 ├─ frontend/             # Leaflet map UI (index.html, app.js, style.css)
@@ -196,6 +203,22 @@ The model is a `RandomForestClassifier` that classifies **high FRP (Fire Radiati
 - **Weather matching**: each fire is matched to the nearest same-day weather record within 100 km.
 - **Output**: the trained pipeline is saved to `modeling/artifacts/high_frp_classifier.joblib`.
 
+**Weather coverage**
+
+`integration/NASA_POWER.py` defaults to `WEATHER_COVERAGE=grid`. It scans the
+fire data for every place with detections, then downloads daily RH2M,
+PRECTOTCORR and GWETTOP for the whole fire date range from the POWER regional
+endpoint, one 10° × 10° tile and one parameter per request. Only grid points
+near fires are kept, thinned to 1° × 1.25°, so every detection lies within
+about 90 km of a weather point (inside the 100 km matching radius). For the
+2025 archive that is about 11,400 points, 392 tiles and 1,176 requests, roughly
+75 minutes at a polite pace. Responses are cached in `raw_data/power_cache/`,
+so an interrupted run resumes, and a manifest next to the output file makes
+later runs skip the download. The previous single-point file is kept as
+`nasa_power_weather_point.csv`; set `WEATHER_COVERAGE=point` for the old
+behaviour. The transform stage re-cleans the weather when the raw file is
+newer, and the load stage reloads `weather_data` when its row count changes.
+
 **Data requirements**
 
 Weather rows must contain `date`, `latitude`, and `longitude` as well as one or more of `RH2M`, `PRECTOTCORR`, and `GWETTOP`. The NASA POWER extraction script preserves these join keys; rerun extraction, transformation, and loading after updating an existing weather table.
@@ -264,6 +287,8 @@ Then open:
 | GET | `/api/v1/weather` | NASA POWER observations used for enrichment |
 | POST | `/api/v1/predict` | Score one detection (JSON body, see below) |
 | POST | `/api/v1/predict/batch` | Score up to 5 000 detections at once |
+| GET | `/api/v1/ask/status` | Whether the assistant can answer (credentials found, enabled) |
+| POST | `/api/v1/ask` | Ask a question in plain language (`{"question": "...", "history": [...]}`); returns the answer and the data lookups behind it |
 | POST | `/api/v1/refresh` | Rebuild the weather index and date range after the pipeline loaded new data (they also expire after `API_CACHE_TTL_SECONDS`, default 300) |
 
 If the model or the data backend is unavailable the service still starts:
@@ -352,6 +377,64 @@ FRP, or satellite), with:
 Basemaps (Esri dark/satellite, OpenStreetMap) need no API key. Set
 `SERVE_FRONTEND=0` to run the API without the UI, and `CORS_ORIGINS` if the
 frontend is hosted elsewhere.
+
+---
+
+## 💬 Ask the data (assistant)
+
+`POST /api/v1/ask` answers questions such as "how did severe fires change
+month by month in Brazil?" or "how is weather matched to a fire?". Claude
+(`claude-opus-5-5` by default) answers by calling read-only tools that run on
+the same repository, model and weather index as the REST API:
+
+| Tool | What it reads |
+|---|---|
+| `get_data_coverage` | Date range, backend, sample fraction, weather coverage |
+| `get_fire_statistics` | Counts, FRP, severe share, by satellite / day-night / day or month |
+| `list_fires` | Up to 50 detections, optionally with predicted severity |
+| `predict_fire_severity` | The model's score for a described detection |
+| `get_model_info` | Metrics, feature importances, training extent |
+| `search_project_docs` | TF-IDF search over this README and a data dictionary |
+
+Numbers in answers come from the tools, and every response lists the lookups
+it made (the frontend shows them under the answer). The tool loop is capped at
+`ASSISTANT_MAX_ROUNDS` rounds, the system prompt and tools are prompt-cached,
+and the server-side refusal fallback is on by default (`ASSISTANT_FALLBACKS`).
+Tool inputs are validated and clamped before any query runs, and the tools
+cannot modify data.
+
+Set `ANTHROPIC_API_KEY` in `.env` to enable it. Without credentials the rest
+of the API runs normally and `/api/v1/ask` answers 503 with the reason; the
+frontend shows the same message. Each question costs a few cents of API usage.
+
+---
+
+## 🛫 Airflow
+
+`orchestration/dags/geodata_pipeline.py` runs the pipeline as an Airflow 3
+DAG (Airflow 2.x also works):
+
+```text
+download_weather ─┬─ transform_fires ───┬─ check_cleaned_outputs ─ load_database ─ train_model ─ refresh_api
+                  └─ transform_weather ─┘
+```
+
+Each task retries twice with exponential backoff, runs are serialised
+(`max_active_runs=1`), and `refresh_api` tells the running API to rebuild its
+caches. Trigger a run with `{"retrain": true}` to retrain over an existing
+model. The task bodies live in `orchestration/tasks.py`, which has no Airflow
+dependency and is unit-tested.
+
+```bash
+docker compose --profile airflow up -d     # http://localhost:8080
+docker compose logs airflow | grep -i password   # admin password on first start
+```
+
+The container runs Airflow in standalone mode (one container, SQLite
+metadata), which suits a single machine. For production, point the official
+Airflow Compose stack's `dags` folder at `orchestration/dags/`. Airflow does
+not run natively on Windows; use Docker or WSL. `GEODATA_SCHEDULE` sets the
+schedule (default `@daily`, `none` for manual runs only).
 
 ---
 
@@ -456,9 +539,9 @@ SELECT ST_AsText(geom) FROM fire_events LIMIT 5;
 
 **Future ideas**
 
-- [ ] RAG system on top of the stored data and project knowledge
-- [ ] Extend NASA POWER weather coverage to match the full time range of the fire data, increasing the number of training samples and improving precision and recall
-- [ ] Orchestrate runs with Airflow for retries, backfills and a run history
+- [x] RAG system on top of the stored data and project knowledge (`POST /api/v1/ask`)
+- [x] Extend NASA POWER weather coverage to match the full time range of the fire data
+- [x] Orchestrate runs with Airflow for retries and a run history
 
 ---
 

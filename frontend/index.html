@@ -151,6 +151,25 @@
       </form>
     </section>
 
+    <section class="section" data-enter aria-labelledby="ask-title">
+      <h2 id="ask-title">Ask about the data</h2>
+      <div id="ask-thread" class="ask-thread" aria-live="polite"></div>
+      <form id="ask-form" autocomplete="off">
+        <label class="visually-hidden" for="ask-input">Your question</label>
+        <textarea id="ask-input" rows="2" maxlength="2000" placeholder="Which region had the most severe fires in August?"></textarea>
+        <div class="ask-suggestions" id="ask-suggestions">
+          <button type="button" class="suggestion">How did severe fires change month by month?</button>
+          <button type="button" class="suggestion">Which satellite sees the strongest fires?</button>
+          <button type="button" class="suggestion">How reliable is the severity model?</button>
+        </div>
+        <div class="actions actions-row">
+          <button type="submit" class="btn btn-primary" id="ask-btn"><span class="btn-label">Ask</span></button>
+          <button type="button" class="btn btn-quiet" id="ask-reset" hidden>Start over</button>
+        </div>
+        <p id="ask-status" class="note" hidden></p>
+      </form>
+    </section>
+
     <section class="section" data-enter aria-labelledby="predict-title">
       <details class="disclosure disclosure-plain" id="predict-disclosure">
         <summary><h2 id="predict-title">Score a detection of your own</h2><span class="summary-hint">Click the map to place it</span></summary>

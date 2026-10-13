@@ -4,6 +4,7 @@ It loads ``fires_sample.csv`` (see ``api/tools_make_sample.py``) when present,
 otherwise the first ``max_rows`` rows of ``cleaned_master_fires.csv``.
 """
 
+import json
 import logging
 from datetime import date
 from pathlib import Path
@@ -58,6 +59,16 @@ class CsvFireRepository(FireRepository):
         frame["acq_date"] = canonical_date(frame["acq_date"])
         frame = frame.dropna(subset=["latitude", "longitude", "acq_date"]).reset_index(drop=True)
         self.available_columns = [name for name in FIRE_COLUMNS if name in frame.columns]
+        # The sample tool records how many rows it sampled from; use it to scale counts.
+        self.sample_fraction = None
+        meta_path = Path(str(self.source_file).replace(".csv", ".meta.json"))
+        if fires_frame is None and meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                if meta.get("source_rows"):
+                    self.sample_fraction = round(len(frame) / float(meta["source_rows"]), 8)
+            except (ValueError, OSError):
+                LOGGER.warning("Could not read sample metadata %s", meta_path)
         self._fires = frame[self.available_columns]
         # True when we serve fewer rows than the full dataset (sample file or row cap hit).
         self.is_subset = fires_frame is None and (
@@ -108,6 +119,7 @@ class CsvFireRepository(FireRepository):
             "file": self.source_file,
             "rows": len(self._fires),
             "is_subset": bool(self.is_subset),
+            "sample_fraction": self.sample_fraction,
         }
 
     def fires(self, filters: FireFilters) -> pd.DataFrame:

@@ -8,6 +8,7 @@ smaller sample file so it starts in seconds. Run::
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -42,6 +43,8 @@ def make_sample(source: Path, destination: Path, rows: int, seed: int = 42) -> i
     kept = kept.drop(columns="_priority").sort_values(["acq_date", "acq_time"])
     destination.parent.mkdir(parents=True, exist_ok=True)
     kept.to_csv(destination, index=False)
+    meta = {"source": str(source), "source_rows": int(seen), "sample_rows": int(len(kept)), "seed": seed}
+    Path(str(destination).replace(".csv", ".meta.json")).write_text(json.dumps(meta, indent=2), encoding="utf-8")
     LOGGER.info("Wrote %s sampled rows (of %s) to %s", len(kept), seen, destination)
     return len(kept)
 

@@ -32,6 +32,11 @@ class Settings:
     max_geojson_features: int = 50_000
     max_batch_predictions: int = 5_000
     cache_ttl_seconds: int = 300  # weather index and date range are rebuilt after this
+    assistant_enabled: bool = True
+    assistant_model: str = "claude-opus-5-5"
+    assistant_effort: str = "medium"
+    assistant_max_rounds: int = 8
+    assistant_fallbacks: bool = True
     cors_origins: list[str] = field(default_factory=lambda: ["*"])
     log_file: Path = ROOT_DIR / "logs" / "api.log"
     log_level: str = "INFO"
@@ -64,6 +69,11 @@ def load_settings() -> Settings:
             os.getenv("API_MAX_BATCH_PREDICTIONS", defaults.max_batch_predictions)
         ),
         cache_ttl_seconds=int(os.getenv("API_CACHE_TTL_SECONDS", defaults.cache_ttl_seconds)),
+        assistant_enabled=os.getenv("ASSISTANT_ENABLED", "1").lower() not in {"0", "false", "no"},
+        assistant_model=os.getenv("ASSISTANT_MODEL", defaults.assistant_model),
+        assistant_effort=os.getenv("ASSISTANT_EFFORT", defaults.assistant_effort),
+        assistant_max_rounds=int(os.getenv("ASSISTANT_MAX_ROUNDS", defaults.assistant_max_rounds)),
+        assistant_fallbacks=os.getenv("ASSISTANT_FALLBACKS", "1").lower() not in {"0", "false", "no"},
         cors_origins=_env_list("CORS_ORIGINS", "*"),
         log_file=Path(os.getenv("API_LOG_FILE", defaults.log_file)),
         log_level=os.getenv("LOG_LEVEL", defaults.log_level).upper(),
