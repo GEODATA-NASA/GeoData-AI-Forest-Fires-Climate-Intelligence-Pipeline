@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.vscode
+.idea
+.env
+raw_data
+cleaned_data
+logs
+*.md
+!README.md
