@@ -158,6 +158,7 @@ GeoData-AI-Forest-Fires-Climate-Intelligence-Pipeline
 │  ├─ tasks.py              # Pipeline stages as plain task functions
 │  ├─ dags/geodata_pipeline.py  # Airflow DAG
 │  └─ airflow.Dockerfile    # Airflow image with the project's dependencies
+├─ scripts/                 # start_app.cmd: one-click start on Windows, plus geodata.ico
 └─ tests/                   # pytest suite (API, assistant, SQL repository, loader, DAG, weather download)
 ```
 
@@ -172,6 +173,15 @@ GeoData-AI-Forest-Fires-Climate-Intelligence-Pipeline
 - The NASA FIRMS archive CSV files (see step 3)
 - Internet access for the NASA POWER API
 - Optional: an Anthropic API key for the assistant
+
+### Quick start on Windows (one click)
+
+Double-click `scripts/start_app.cmd` (or a desktop shortcut pointing to it). On
+first run it creates `.venv` and installs the requirements; then it starts the
+API and opens the map in the browser once the data has loaded. Keep the window
+open while you use the app and close it to stop. If the app is already running
+it just opens the browser. Optional: `GEODATA_PORT=8001` for another port.
+The data must be in `CLEANED_DATA_DIR` (or in PostgreSQL), as set in `.env`.
 
 ### 1. Clone and install
 
