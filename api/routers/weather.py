@@ -23,12 +23,7 @@ def list_weather(
 ) -> WeatherListResponse:
     if weather_index is None or len(weather_index) == 0:
         return WeatherListResponse(items=[], count=0, features=[], max_distance_km=settings.max_weather_distance_km)
-    frame = weather_index.weather
-    if start_date:
-        frame = frame.loc[frame["date"] >= str(start_date)]
-    if end_date:
-        frame = frame.loc[frame["date"] <= str(end_date)]
-    frame = frame.head(limit)
+    frame = weather_index.rows(start_date, end_date, limit)
     return WeatherListResponse(
         items=frame_to_records(frame),
         count=len(frame),

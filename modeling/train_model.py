@@ -120,11 +120,28 @@ def table_columns(engine, table_name, schema):
 
 
 def canonical_date(values):
-    """Parse SQL dates and NASA POWER YYYYMMDD values consistently."""
+    """Parse SQL dates and NASA POWER YYYYMMDD values consistently.
+
+    Date columns repeat a handful of values (one per day), so each distinct
+    value is parsed once and mapped back: millions of rows cost the same as
+    a few hundred.
+    """
+    values = pd.Series(values)
+    codes, uniques = pd.factorize(values, use_na_sentinel=True)
+    if len(uniques) < len(values):
+        parsed_uniques = _canonical_date_unique(pd.Series(uniques)).to_numpy()
+        parsed = np.full(len(values), np.datetime64("NaT", "ns"), dtype="datetime64[ns]")
+        known = codes >= 0
+        parsed[known] = parsed_uniques[codes[known]]
+        return pd.Series(parsed, index=values.index)
+    return _canonical_date_unique(values)
+
+
+def _canonical_date_unique(values):
     values = values.astype("string").str.strip().str.replace(r"\.0$", "", regex=True)
     compact_dates = values.str.fullmatch(r"\d{8}", na=False)
     parsed = pd.to_datetime(values.where(compact_dates), format="%Y%m%d", errors="coerce")
-    parsed.loc[~compact_dates] = pd.to_datetime(values.loc[~compact_dates], errors="coerce")
+    parsed.loc[~compact_dates] = pd.to_datetime(values.loc[~compact_dates], errors="coerce", format="mixed")
     return parsed.dt.normalize()
 
 

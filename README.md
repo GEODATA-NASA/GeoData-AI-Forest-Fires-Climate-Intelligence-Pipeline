@@ -227,19 +227,37 @@ Weather rows must contain `date`, `latitude`, and `longitude` as well as one or 
 
 | Mode | Setting | Trains on | Use when |
 |---|---|---|---|
-| Weather-matched (default) | `REQUIRE_WEATHER_MATCH=1` | Only detections with a same-day NASA POWER record within the radius | Weather coverage matches the fire data |
-| Global | `REQUIRE_WEATHER_MATCH=0` | Every detection; missing weather is imputed | Weather coverage is much smaller than fire coverage |
+| Weather-matched (default) | `REQUIRE_WEATHER_MATCH=1` | Only detections with a same-day NASA POWER record within the radius | Grid weather covers the fire data (the default download) |
+| All detections | `REQUIRE_WEATHER_MATCH=0` | Every detection; missing weather is imputed | Weather coverage is much smaller than fire coverage (e.g. `WEATHER_COVERAGE=point`) |
 
-With the shipped weather file (one station near Cairo, January 2025) the
-default mode trains on roughly 400 detections from one region, and the model
-then produces almost the same score everywhere else on Earth, because its
-latitude/longitude splits all lie inside that region. The global mode trained
-on a 300 000-row sample reaches ROC-AUC 0.88 (precision 0.75, recall 0.61 for
-severe fires) on a chronological hold-out, with brightness as the main driver.
-`modeling/artifacts/high_frp_classifier_global.joblib` is that model; point
-`MODEL_PATH` at it to serve it. Every artifact now records its training extent,
-metrics and feature importances; the API returns `in_training_extent=false`
-for scores outside that extent and the frontend shows a caution.
+**The shipped model**
+
+`modeling/artifacts/high_frp_classifier.joblib` is trained on a uniform
+300 000-detection sample of the 2025 archive with grid weather matched to
+every detection (`REQUIRE_WEATHER_MATCH=1`, 299 999 of 300 000 matched). On a
+chronological hold-out of 45 590 detections from 20 October to 31 December
+2025 (25.7% severe):
+
+| Model | Training rows | Weather matched | ROC-AUC | Precision | Recall | Brier |
+|---|---|---|---|---|---|---|
+| Single Cairo station (original) | ~400 | all | 0.689 | 0.906 | 0.013 | 0.184 |
+| Global, weather imputed | 300 000 | 3 | 0.8887 | 0.627 | 0.759 | 0.1267 |
+| **Global, grid weather (shipped)** | 300 000 | 299 999 | **0.8892** | 0.630 | 0.759 | **0.1256** |
+| Global, grid weather | 1 200 000 | all | 0.8915 | 0.624 | 0.765 | 0.1258 |
+
+Brightness, confidence and pixel size carry most of the decision; humidity,
+soil wetness and precipitation together account for about 4%. Extending the
+weather coverage fixed the model's geographic collapse (the original model
+scored almost every fire on Earth the same, because its location splits all
+lay inside one region), but weather itself adds little once a fire is already
+detected, and four times more training rows adds about 0.003 ROC-AUC while
+producing a 121 MB artifact, over GitHub's file limit. Precision and recall
+are traded through the decision threshold (`DECISION_THRESHOLD`, or the
+`decision_threshold` query parameter).
+
+Every artifact records its training extent, metrics and feature importances;
+the API returns `in_training_extent=false` for scores outside that extent and
+the frontend shows a caution.
 
 **Configuration**
 
