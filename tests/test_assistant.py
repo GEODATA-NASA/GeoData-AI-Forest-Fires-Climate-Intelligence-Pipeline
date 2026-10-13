@@ -137,10 +137,16 @@ def test_tool_executor_validation_and_outputs(runtime):
 
 
 def test_documentation_search_finds_relevant_sections(runtime):
-    kb = KnowledgeBase.from_project(runtime.settings.frontend_dir.parent)
-    top = kb.search("what does frp mean fire radiative power")[0]
-    assert "radiative" in top["text"].lower()
-    assert kb.search("how do I run docker compose")  # README section
+    from api.assistant.knowledge import DATA_DICTIONARY
+
+    # A fixed corpus, so edits to the README cannot change the expected hit.
+    kb = KnowledgeBase({"data dictionary": DATA_DICTIONARY})
+    hits = kb.search("what does frp mean fire radiative power", limit=4)
+    assert any("fire radiative power" in hit["text"].lower() for hit in hits)
+    assert kb.search("unrelated words like spaceship banana") == []
+
+    project = KnowledgeBase.from_project(runtime.settings.frontend_dir.parent)
+    assert any(hit["source"] == "README.md" for hit in project.search("docker compose", limit=4))
 
 
 def test_endpoint_status_and_errors(settings):
