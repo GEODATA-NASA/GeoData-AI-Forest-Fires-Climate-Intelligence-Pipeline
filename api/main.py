@@ -6,7 +6,8 @@ Run locally with::
 
 The app loads the trained classifier, connects to PostgreSQL (or falls back to
 the cleaned CSV files), builds the same-day weather index, and serves the
-Leaflet frontend from ``frontend/`` at ``/``.
+Leaflet frontend from ``frontend/`` at ``/``. A missing backend or model does
+not stop the service: the affected endpoints answer 503 and ``/health`` says why.
 """
 
 import logging
@@ -18,18 +19,17 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from fastapi import FastAPI, Request  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from api.logging_config import RequestLoggingMiddleware, configure_logging  # noqa: E402
 from api.predictor import SeverityPredictor  # noqa: E402
 from api.repositories import create_repository  # noqa: E402
 from api.routers import fires, health, predict, weather  # noqa: E402
+from api.runtime import RuntimeData  # noqa: E402
 from api.settings import Settings, load_settings  # noqa: E402
 from api.version import __version__  # noqa: E402
-from api.weather_index import WeatherIndex  # noqa: E402
 
 DESCRIPTION = """
 Serves NASA FIRMS fire detections and NASA POWER weather from the GeoData pipeline
@@ -40,6 +40,7 @@ database, plus **high-FRP severity predictions** from the trained RandomForest m
 * `GET /api/v1/fires/stats` - daily / per-satellite aggregates
 * `POST /api/v1/predict` - score one detection (weather is matched automatically)
 * `POST /api/v1/predict/batch` - score many detections
+* `POST /api/v1/refresh` - rebuild caches after the pipeline loaded new data
 """
 
 
@@ -51,32 +52,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         logger.info("Starting GeoData API v%s (backend=%s).", __version__, settings.data_backend)
         app.state.settings = settings
-        app.state.repository = None
-        app.state.predictor = None
-        app.state.weather_index = None
-        app.state.fire_date_range = None
+        app.state.startup_errors = {}
 
-        app.state.repository = create_repository(settings)
-
+        repository = None
         try:
-            app.state.predictor = SeverityPredictor(
+            repository = create_repository(settings)
+        except Exception as error:  # noqa: BLE001 - keep serving /health and the frontend
+            app.state.startup_errors["data"] = str(error)
+            logger.exception("No data backend is available; data endpoints will return 503.")
+
+        predictor = None
+        try:
+            predictor = SeverityPredictor(
                 settings.model_path, settings.high_frp_threshold_mw, settings.decision_threshold
             ).load()
-        except Exception:  # noqa: BLE001
+        except Exception as error:  # noqa: BLE001
+            app.state.startup_errors["model"] = str(error)
             logger.exception("Model could not be loaded; prediction endpoints will return 503.")
 
-        try:
-            weather_index = WeatherIndex(app.state.repository.weather(), settings.max_weather_distance_km)
-            app.state.weather_index = weather_index
-            logger.info("Weather index ready: %s", weather_index.summary())
-        except Exception:  # noqa: BLE001
-            logger.exception("Weather data could not be indexed; predictions will use imputed weather.")
+        runtime = RuntimeData(settings, repository, predictor)
+        app.state.runtime = runtime
+        if repository is not None:
+            runtime.weather_index()
+            runtime.date_range()
 
         yield
 
         logger.info("Shutting down GeoData API.")
-        if app.state.repository is not None:
-            app.state.repository.close()
+        runtime.close()
 
     app = FastAPI(
         title="GeoData AI - Forest Fires & Climate Intelligence API",
@@ -87,6 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redoc_url="/redoc",
     )
     app.state.settings = settings
+    app.state.runtime = None
 
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(
@@ -97,15 +101,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
         expose_headers=["X-Request-ID", "X-Response-Time-ms"],
     )
-
-    @app.exception_handler(Exception)
-    async def unhandled_exception_handler(request: Request, exc: Exception):
-        request_id = getattr(request.state, "request_id", None)
-        logger.exception("Unhandled error on %s %s [rid=%s]", request.method, request.url.path, request_id)
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Internal server error.", "request_id": request_id},
-        )
 
     app.include_router(health.router)
     app.include_router(fires.router)

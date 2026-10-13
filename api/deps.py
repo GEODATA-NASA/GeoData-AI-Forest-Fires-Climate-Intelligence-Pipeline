@@ -8,6 +8,7 @@ from fastapi import Depends, HTTPException, Query, Request
 from api.filters import ORDER_OPTIONS, FireFilters
 from api.predictor import SeverityPredictor
 from api.repositories.base import FireRepository
+from api.runtime import RuntimeData
 from api.settings import Settings
 from api.weather_index import WeatherIndex
 
@@ -16,22 +17,34 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
-def get_repository(request: Request) -> FireRepository:
-    repository = getattr(request.app.state, "repository", None)
-    if repository is None:
-        raise HTTPException(status_code=503, detail="Data backend is not available.")
-    return repository
+def get_runtime(request: Request) -> RuntimeData:
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="The service is still starting.")
+    return runtime
 
 
-def get_predictor(request: Request) -> SeverityPredictor:
-    predictor = getattr(request.app.state, "predictor", None)
+def get_repository(runtime: Annotated[RuntimeData, Depends(get_runtime)]) -> FireRepository:
+    if runtime.repository is None:
+        raise HTTPException(status_code=503, detail="No data backend is available. Load data with the pipeline or check the database settings.")
+    return runtime.repository
+
+
+def get_predictor(runtime: Annotated[RuntimeData, Depends(get_runtime)]) -> SeverityPredictor:
+    predictor = runtime.predictor
     if predictor is None or not predictor.loaded:
-        raise HTTPException(status_code=503, detail="Model is not loaded.")
+        raise HTTPException(status_code=503, detail="The model is not loaded. Train it with the pipeline or check MODEL_PATH.")
     return predictor
 
 
-def get_weather_index(request: Request) -> WeatherIndex | None:
-    return getattr(request.app.state, "weather_index", None)
+def get_optional_predictor(runtime: Annotated[RuntimeData, Depends(get_runtime)]) -> SeverityPredictor | None:
+    """For endpoints where predictions are an opt-in extra."""
+    predictor = runtime.predictor
+    return predictor if predictor is not None and predictor.loaded else None
+
+
+def get_weather_index(runtime: Annotated[RuntimeData, Depends(get_runtime)]) -> WeatherIndex | None:
+    return runtime.weather_index()
 
 
 def fire_filters(
@@ -58,6 +71,8 @@ def fire_filters(
         raise HTTPException(status_code=422, detail="start_date must be on or before end_date.")
     if order not in ORDER_OPTIONS:
         raise HTTPException(status_code=422, detail=f"order must be one of {', '.join(ORDER_OPTIONS)}.")
+    if min_frp is not None and max_frp is not None and min_frp > max_frp:
+        raise HTTPException(status_code=422, detail="min_frp must be at most max_frp.")
 
     min_lon = min_lat = max_lon = max_lat = None
     if bbox:
@@ -91,7 +106,9 @@ def fire_filters(
 
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+RuntimeDep = Annotated[RuntimeData, Depends(get_runtime)]
 RepositoryDep = Annotated[FireRepository, Depends(get_repository)]
 PredictorDep = Annotated[SeverityPredictor, Depends(get_predictor)]
+OptionalPredictorDep = Annotated[SeverityPredictor | None, Depends(get_optional_predictor)]
 WeatherIndexDep = Annotated[WeatherIndex | None, Depends(get_weather_index)]
 FiltersDep = Annotated[FireFilters, Depends(fire_filters)]

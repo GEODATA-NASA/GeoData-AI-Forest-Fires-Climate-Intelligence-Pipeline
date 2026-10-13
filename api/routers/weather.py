@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from api.deps import SettingsDep, WeatherIndexDep
+from api.deps import RepositoryDep, SettingsDep, WeatherIndexDep
 from api.schemas import WeatherListResponse
 from api.serialization import frame_to_records
 
@@ -14,6 +14,7 @@ router = APIRouter(prefix="/api/v1/weather", tags=["weather"])
 
 @router.get("", response_model=WeatherListResponse, summary="List weather observations")
 def list_weather(
+    _repository: RepositoryDep,  # 503 when no data backend is available, like the fire endpoints
     weather_index: WeatherIndexDep,
     settings: SettingsDep,
     start_date: Annotated[date | None, Query()] = None,

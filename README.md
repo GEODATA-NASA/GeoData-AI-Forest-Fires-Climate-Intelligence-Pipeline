@@ -242,6 +242,12 @@ Then open:
 | GET | `/api/v1/weather` | NASA POWER observations used for enrichment |
 | POST | `/api/v1/predict` | Score one detection (JSON body, see below) |
 | POST | `/api/v1/predict/batch` | Score up to 5 000 detections at once |
+| POST | `/api/v1/refresh` | Rebuild the weather index and date range after the pipeline loaded new data (they also expire after `API_CACHE_TTL_SECONDS`, default 300) |
+
+If the model or the data backend is unavailable the service still starts:
+`/health` reports `degraded` with the reason, the affected endpoints answer
+503, and everything else keeps working (for example the map with
+`predict=false`).
 
 Example prediction:
 
