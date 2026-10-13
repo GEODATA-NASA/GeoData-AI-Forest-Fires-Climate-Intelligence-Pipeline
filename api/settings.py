@@ -31,6 +31,7 @@ class Settings:
     max_page_size: int = 5_000
     max_geojson_features: int = 50_000
     max_batch_predictions: int = 5_000
+    cache_ttl_seconds: int = 300  # weather index and date range are rebuilt after this
     cors_origins: list[str] = field(default_factory=lambda: ["*"])
     log_file: Path = ROOT_DIR / "logs" / "api.log"
     log_level: str = "INFO"
@@ -62,6 +63,7 @@ def load_settings() -> Settings:
         max_batch_predictions=int(
             os.getenv("API_MAX_BATCH_PREDICTIONS", defaults.max_batch_predictions)
         ),
+        cache_ttl_seconds=int(os.getenv("API_CACHE_TTL_SECONDS", defaults.cache_ttl_seconds)),
         cors_origins=_env_list("CORS_ORIGINS", "*"),
         log_file=Path(os.getenv("API_LOG_FILE", defaults.log_file)),
         log_level=os.getenv("LOG_LEVEL", defaults.log_level).upper(),

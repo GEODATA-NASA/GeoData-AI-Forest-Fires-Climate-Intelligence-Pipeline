@@ -134,3 +134,9 @@ class HealthResponse(BaseModel):
     model: dict[str, Any]
     weather: dict[str, Any]
     fire_date_range: DateRange
+    cache_ttl_seconds: int
+
+
+class RefreshResponse(BaseModel):
+    weather: dict[str, Any]
+    fire_date_range: DateRange

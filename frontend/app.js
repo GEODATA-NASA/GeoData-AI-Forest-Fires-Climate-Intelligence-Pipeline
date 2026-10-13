@@ -391,7 +391,8 @@
       el("result-sub").textContent = `Severe means ${result.high_frp_threshold_mw} MW or more. Cut‑off at ${Math.round(result.decision_threshold * 100)}%.`;
       el("result-threshold").style.left = `${result.decision_threshold * 100}%`;
       const w = result.weather;
-      const kv = [["Weather", w.matched ? `Station ${w.distance_km} km away, same day` : "No station within 100 km that day, values imputed"]];
+      const radius = (state.health && state.health.weather && state.health.weather.max_distance_km) || 100;
+      const kv = [["Weather", w.matched ? `Station ${w.distance_km} km away, same day` : `No station within ${radius} km that day, values imputed`]];
       if (w.matched) kv.push(["Humidity", `${w.rh2m ?? "Not recorded"} %`], ["Precipitation", `${w.prectotcorr ?? "Not recorded"} mm`], ["Soil wetness", `${w.gwettop ?? "Not recorded"}`]);
       el("result-weather").innerHTML = kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
       if (first) tween({ targets: box, opacity: [0, 1], translateY: [8, 0], duration: 360, easing: "easeOutCubic" });

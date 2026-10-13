@@ -104,7 +104,8 @@ class WeatherIndex:
             result[feature] = np.nan
         result["weather_distance_km"] = np.nan
 
-        days = canonical_date(dates)
+        # Already-parsed timestamps skip the expensive string round-trip.
+        days = dates.dt.normalize() if pd.api.types.is_datetime64_any_dtype(dates) else canonical_date(dates)
         lat = pd.to_numeric(latitudes, errors="coerce")
         lon = pd.to_numeric(longitudes, errors="coerce")
         usable = days.notna() & lat.notna() & lon.notna()

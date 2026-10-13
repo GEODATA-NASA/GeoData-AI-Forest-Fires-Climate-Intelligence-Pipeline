@@ -38,10 +38,8 @@ def create_repository(settings: Settings) -> FireRepository:
         except Exception as error:  # noqa: BLE001 - we want to report any connection problem
             if backend == "postgres":
                 raise
-            LOGGER.warning(
-                "PostgreSQL is unavailable (%s). Falling back to the CSV backend.",
-                str(error).splitlines()[0],
-            )
+            reason = (str(error).splitlines() or [type(error).__name__])[0]
+            LOGGER.warning("PostgreSQL is unavailable (%s). Falling back to the CSV backend.", reason)
 
     repository = CsvFireRepository(
         fires_file=settings.fires_csv,
