@@ -155,7 +155,7 @@
       <details class="disclosure disclosure-plain" id="predict-disclosure">
         <summary><h2 id="predict-title">Score a detection of your own</h2><span class="summary-hint">Click the map to place it</span></summary>
         <div class="disclosure-body">
-          <p class="lead">Set the detection values and the model returns the chance that its fire radiative power is at or above the severity threshold. Weather for that day and place is matched from the nearest NASA POWER station when one is close enough.</p>
+          <p class="lead">Set the detection values and the model returns the chance that its fire radiative power is at or above the severity threshold. Pixel size matters most: MODIS pixels are larger and carry more power than VIIRS pixels, so pick the sensor you mean. Weather for that day and place is matched from the nearest NASA POWER station when one is close enough.</p>
           <form id="predict-form" autocomplete="off">
             <div class="row-2">
               <label class="field"><span>Latitude</span><input type="number" id="p-lat" step="0.0001" min="-90" max="90" required></label>
@@ -164,6 +164,13 @@
             <div class="row-2">
               <label class="field"><span>Date</span><input type="date" id="p-date" required></label>
               <label class="field"><span>Time, HHMM UTC</span><input type="number" id="p-time" min="0" max="2359" step="1" value="1200"></label>
+            </div>
+            <div class="field"><span>Sensor</span>
+              <div class="segmented" data-segmented id="sensor-seg">
+                <span class="segmented-thumb" aria-hidden="true"></span>
+                <label><input type="radio" name="sensor" value="viirs" checked><span>VIIRS, 375 m pixel</span></label>
+                <label><input type="radio" name="sensor" value="modis"><span>MODIS, 1 km pixel</span></label>
+              </div>
             </div>
             <div class="row-3">
               <label class="field"><span>Brightness, K</span><input type="number" id="p-brightness" step="0.1" min="1" value="320"></label>
@@ -178,8 +185,8 @@
               </label>
             </div>
             <div class="row-2">
-              <label class="field"><span>Scan, km</span><input type="number" id="p-scan" step="0.01" min="0.1" value="1.0"></label>
-              <label class="field"><span>Track, km</span><input type="number" id="p-track" step="0.01" min="0.1" value="1.0"></label>
+              <label class="field"><span>Scan, km</span><input type="number" id="p-scan" step="0.01" min="0.1" value="0.38"></label>
+              <label class="field"><span>Track, km</span><input type="number" id="p-track" step="0.01" min="0.1" value="0.36"></label>
             </div>
             <div class="actions">
               <button type="submit" class="btn btn-primary" id="predict-btn"><span class="btn-label">Score this detection</span></button>

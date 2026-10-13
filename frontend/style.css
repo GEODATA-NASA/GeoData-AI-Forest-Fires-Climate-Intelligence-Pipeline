@@ -329,3 +329,7 @@ body.panel-hidden .leaflet-top.leaflet-left { left: 16px; }
   .toast { bottom: calc(58vh + 16px); }
   .popover { width: calc(100vw - 32px); }
 }
+
+.pop-action { display: block; width: 100%; margin-top: 10px; border: 0; border-radius: 999px; min-height: 34px; padding: 0 12px; font: inherit; font-size: 12.5px; font-weight: 700; background: var(--accent); color: var(--on-accent); cursor: pointer; transition: transform var(--ease-duration) var(--ease), background 120ms; }
+.pop-action:hover { background: var(--accent-press); }
+.pop-action:active { transform: scale(0.97); }
