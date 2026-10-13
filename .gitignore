@@ -50,3 +50,8 @@ cleaned_data/
 
 # Logs
 logs/
+# Local virtual environments
+.venv/
+
+# Pytest
+.pytest_cache/
