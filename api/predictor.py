@@ -36,6 +36,9 @@ class SeverityPredictor:
         self.feature_columns: list[str] = []
         self.weather_features: list[str] = []
         self.target_description: str | None = None
+        self.feature_importances: dict | None = None
+        self.metrics: dict | None = None
+        self.training_extent: dict | None = None
 
     # ------------------------------------------------------------ lifecycle
     def load(self) -> "SeverityPredictor":
@@ -48,6 +51,9 @@ class SeverityPredictor:
             name for name in artifact.get("weather_features", WEATHER_FEATURES) if name in self.feature_columns
         ]
         self.target_description = artifact.get("target")
+        self.feature_importances = artifact.get("feature_importances") or self._importances_from_model()
+        self.metrics = artifact.get("metrics")
+        self.training_extent = artifact.get("training_extent")
         LOGGER.info(
             "Loaded model %s with %s features (%s).",
             self.model_path.name, len(self.feature_columns), ", ".join(self.feature_columns),
@@ -57,6 +63,30 @@ class SeverityPredictor:
     @property
     def loaded(self) -> bool:
         return self.model is not None
+
+    def _importances_from_model(self) -> dict | None:
+        """Older artifacts did not store importances; read them off the estimator."""
+        final = self.model.steps[-1][1] if hasattr(self.model, "steps") else self.model
+        values = getattr(final, "feature_importances_", None)
+        if values is None:
+            return None
+        return {name: float(value) for name, value in zip(self.feature_columns, values)}
+
+    def in_training_extent(self, latitude: float, longitude: float, day) -> bool | None:
+        """None when the artifact carries no extent (model trained before it was recorded)."""
+        extent = self.training_extent
+        if not extent:
+            return None
+        try:
+            inside = (
+                extent["latitude_min"] <= float(latitude) <= extent["latitude_max"]
+                and extent["longitude_min"] <= float(longitude) <= extent["longitude_max"]
+            )
+            if day is not None and extent.get("start_date") and extent.get("end_date"):
+                inside = inside and extent["start_date"] <= str(pd.Timestamp(day).date()) <= extent["end_date"]
+            return bool(inside)
+        except (KeyError, TypeError, ValueError):
+            return None
 
     def info(self) -> dict:
         estimator = None
@@ -75,6 +105,9 @@ class SeverityPredictor:
             "target": self.target_description,
             "high_frp_threshold_mw": self.high_frp_threshold_mw,
             "decision_threshold": self.decision_threshold,
+            "feature_importances": self.feature_importances if self.loaded else None,
+            "metrics": self.metrics if self.loaded else None,
+            "training_extent": self.training_extent if self.loaded else None,
         }
 
     # ----------------------------------------------------------- inference

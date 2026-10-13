@@ -28,6 +28,7 @@ def _predict(observations: list[FireObservation], predictor, weather_index, sett
                 predicted_label=record["predicted_label"],
                 decision_threshold=threshold,
                 high_frp_threshold_mw=settings.high_frp_threshold_mw,
+                in_training_extent=predictor.in_training_extent(observation.latitude, observation.longitude, observation.acq_date),
                 weather=WeatherUsed(
                     matched=record.get("weather_matched", False),
                     supplied=record.get("weather_supplied", False),

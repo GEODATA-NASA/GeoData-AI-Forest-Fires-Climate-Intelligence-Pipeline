@@ -15,6 +15,10 @@ def test_model_info_lists_training_features(client):
     assert payload["loaded"] is True
     assert payload["feature_columns"][:2] == ["latitude", "longitude"]
     assert "day_of_year" in payload["feature_columns"]
+    importances = payload["feature_importances"]
+    assert set(importances) == set(payload["feature_columns"])
+    assert list(importances.values()) == sorted(importances.values(), reverse=True)
+    assert abs(sum(importances.values()) - 1) < 1e-6
 
 
 def test_list_fires_filters_and_orders(client):

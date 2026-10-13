@@ -200,6 +200,24 @@ The model is a `RandomForestClassifier` that classifies **high FRP (Fire Radiati
 
 Weather rows must contain `date`, `latitude`, and `longitude` as well as one or more of `RH2M`, `PRECTOTCORR`, and `GWETTOP`. The NASA POWER extraction script preserves these join keys; rerun extraction, transformation, and loading after updating an existing weather table.
 
+**Two training modes**
+
+| Mode | Setting | Trains on | Use when |
+|---|---|---|---|
+| Weather-matched (default) | `REQUIRE_WEATHER_MATCH=1` | Only detections with a same-day NASA POWER record within the radius | Weather coverage matches the fire data |
+| Global | `REQUIRE_WEATHER_MATCH=0` | Every detection; missing weather is imputed | Weather coverage is much smaller than fire coverage |
+
+With the shipped weather file (one station near Cairo, January 2025) the
+default mode trains on roughly 400 detections from one region, and the model
+then produces almost the same score everywhere else on Earth, because its
+latitude/longitude splits all lie inside that region. The global mode trained
+on a 300 000-row sample reaches ROC-AUC 0.88 (precision 0.75, recall 0.61 for
+severe fires) on a chronological hold-out, with brightness as the main driver.
+`modeling/artifacts/high_frp_classifier_global.joblib` is that model; point
+`MODEL_PATH` at it to serve it. Every artifact now records its training extent,
+metrics and feature importances; the API returns `in_training_extent=false`
+for scores outside that extent and the frontend shows a caution.
+
 **Configuration**
 
 The default high-FRP threshold is 10 MW. Configure the following with environment variables if needed:
@@ -209,6 +227,10 @@ The default high-FRP threshold is 10 MW. Configure the following with environmen
 | `HIGH_FRP_THRESHOLD` | FRP value (MW) above which a fire is labelled high severity |
 | `MAX_WEATHER_DISTANCE_KM` | Maximum distance for matching a fire to a weather record |
 | `MAX_TRAINING_ROWS` | Cap on the number of rows used for training |
+| `REQUIRE_WEATHER_MATCH` | 1 (default) keeps only weather-matched fires; 0 trains on all fires |
+| `TRAINING_SOURCE` | `db` (default) or `csv` to train from `cleaned_data/` without PostgreSQL |
+| `MODEL_ARTIFACT_PATH` | Where to save the trained model |
+| `RF_N_ESTIMATORS`, `RF_MIN_SAMPLES_LEAF`, `RF_MAX_DEPTH` | Forest size (200 / 20 / 18 by default; depth 0 = unlimited). Small leaves on large samples produce gigabyte artifacts |
 | `DB_SCHEMA` | Database schema containing the tables |
 
 ---

@@ -50,6 +50,10 @@ class Prediction(BaseModel):
     decision_threshold: float
     high_frp_threshold_mw: float
     weather: WeatherUsed
+    in_training_extent: bool | None = Field(
+        None,
+        description="False when the location or date lies outside what the model was trained on, so the score is an extrapolation. None if the artifact records no extent.",
+    )
     input: dict[str, Any] | None = None
 
 
@@ -124,6 +128,9 @@ class ModelInfo(BaseModel):
     target: str | None
     high_frp_threshold_mw: float
     decision_threshold: float
+    feature_importances: dict[str, float] | None = None
+    metrics: dict[str, Any] | None = None
+    training_extent: dict[str, Any] | None = None
 
 
 class HealthResponse(BaseModel):
