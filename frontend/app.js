@@ -253,7 +253,8 @@
   }
 
   // ------------------------------------------------------------- rendering
-  function popupHtml(props, lat, lon) {
+  const SENSOR_PIXELS = { viirs: { scan: 0.38, track: 0.36 }, modis: { scan: 1.0, track: 1.0 } };
+  function popupHtml(props, lat, lon, index) {
     const tag = props.is_high_frp ? '<span class="pop-tag high">Predicted severe</span>' : '<span class="pop-tag normal">Predicted normal</span>';
     const time = props.acq_time != null ? String(props.acq_time).padStart(4, "0").replace(/(\d\d)(\d\d)/, "$1:$2") + " UTC" : "";
     const rows = [
@@ -264,15 +265,43 @@
       ["Satellite", `${SOURCE_LABELS[props.satellite_source] || props.satellite_source || "Unknown"}, ${props.daynight === "N" ? "night" : "day"} pass`],
       ["Weather", props.weather_matched ? "Matched to a station" : "No station nearby, values imputed"],
     ];
-    return `<p class="pop-title">${props.acq_date ? dateLabel(props.acq_date) : "Detection"} ${time}</p><p class="pop-sub">${lat.toFixed(4)}, ${lon.toFixed(4)}</p>${tag}<table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</table>`;
+    const action = index != null ? `<button type="button" class="pop-action" data-score="${index}">Score this detection with its own values</button>` : "";
+    return `<p class="pop-title">${props.acq_date ? dateLabel(props.acq_date) : "Detection"} ${time}</p><p class="pop-sub">${lat.toFixed(4)}, ${lon.toFixed(4)}</p>${tag}<table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</table>${action}`;
   }
+  // Fill the scoring form from a mapped detection so the score matches the dot.
+  function fillFormFromFeature(feature) {
+    const p = feature.properties, [lon, lat] = feature.geometry.coordinates;
+    setPin(lat, lon, false);
+    if (p.acq_date) el("p-date").value = p.acq_date;
+    if (p.acq_time != null) el("p-time").value = p.acq_time;
+    if (p.brightness != null) el("p-brightness").value = p.brightness;
+    if (p.confidence != null) el("p-confidence").value = p.confidence;
+    if (p.type != null) el("p-type").value = String(p.type);
+    if (p.scan != null) el("p-scan").value = p.scan;
+    if (p.track != null) el("p-track").value = p.track;
+    const sensor = p.satellite_source === "modis" ? "modis" : "viirs";
+    document.querySelector(`input[name="sensor"][value="${sensor}"]`).checked = true;
+    el("predict-disclosure").open = true;
+    refreshSegments();
+  }
+  map.on("popupopen", (e) => {
+    const button = e.popup.getElement() && e.popup.getElement().querySelector("[data-score]");
+    if (!button) return;
+    button.addEventListener("click", () => {
+      const feature = state.features[Number(button.dataset.score)];
+      if (!feature) return;
+      map.closePopup();
+      fillFormFromFeature(feature);
+      el("predict-form").requestSubmit();
+    });
+  });
   function renderFeatures(features, reveal) {
     const mode = checkedValue("color-mode") || "severity", pal = palette();
     if (state.layer) { map.removeLayer(state.layer); state.layer = null; }
     const radius = features.length > 20000 ? 2.5 : features.length > 5000 ? 3.5 : 4.5;
     state.layer = L.geoJSON({ type: "FeatureCollection", features }, {
       pointToLayer: (feature, latlng) => L.circleMarker(latlng, { renderer: canvasRenderer, radius, color: "rgba(255,255,255,0.6)", weight: 0.6, fillColor: featureColor(feature.properties, mode, pal), fillOpacity: 0.85 }),
-      onEachFeature: (feature, layer) => layer.bindPopup(() => { const [lon, lat] = feature.geometry.coordinates; return popupHtml(feature.properties, lat, lon); }, { maxWidth: 300 }),
+      onEachFeature: (feature, layer) => layer.bindPopup(() => { const [lon, lat] = feature.geometry.coordinates; return popupHtml(feature.properties, lat, lon, features.indexOf(feature)); }, { maxWidth: 300 }),
     }).addTo(map);
     renderLegend(mode);
     if (reveal !== false) tween({ targets: map.getPane("overlayPane"), opacity: [0, 1], duration: 420, easing: "easeOutCubic" });
@@ -340,6 +369,7 @@
         getJSON("/api/v1/fires/stats", filters),
       ]);
       state.lastFilters = filters; state.features = geojson.features; state.stats = stats;
+      if (!state.dateTouched) el("p-date").value = filters.end_date;
       renderFeatures(geojson.features, true);
       renderSummary(geojson, stats);
       if (geojson.features.length && !el("use-viewport").checked) map.flyToBounds(state.layer.getBounds().pad(0.08), { maxZoom: 8, duration: MOTION ? 0.9 : 0 });
@@ -361,7 +391,7 @@
       if (health.fire_date_range.end_date) {
         el("start-date").min = health.fire_date_range.start_date;
         el("end-date").max = health.fire_date_range.end_date;
-        el("p-date").value = health.weather.end_date || health.fire_date_range.end_date;
+        el("p-date").value = health.fire_date_range.end_date;
       }
       return health;
     } catch (error) {
@@ -393,6 +423,7 @@
       const w = result.weather;
       const radius = (state.health && state.health.weather && state.health.weather.max_distance_km) || 100;
       const kv = [["Weather", w.matched ? `Station ${w.distance_km} km away, same day` : `No station within ${radius} km that day, values imputed`]];
+      kv.unshift(["Scored as", `${checkedValue("sensor") === "modis" ? "MODIS" : "VIIRS"} pixel ${body.scan} × ${body.track} km, ${body.brightness} K, confidence ${body.confidence}%, ${dateLabel(body.acq_date)}`]);
       if (w.matched) kv.push(["Humidity", `${w.rh2m ?? "Not recorded"} %`], ["Precipitation", `${w.prectotcorr ?? "Not recorded"} mm`], ["Soil wetness", `${w.gwettop ?? "Not recorded"}`]);
       el("result-weather").innerHTML = kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
       if (first) tween({ targets: box, opacity: [0, 1], translateY: [8, 0], duration: 360, easing: "easeOutCubic" });
@@ -427,9 +458,15 @@
   el("reset-btn").addEventListener("click", () => { resetFilters(); loadFires(); });
   el("color-seg").addEventListener("change", () => { if (state.features.length) renderFeatures(state.features, false); else renderLegend(checkedValue("color-mode")); });
   el("predict-form").addEventListener("submit", runPrediction);
+  el("sensor-seg").addEventListener("change", () => {
+    const pixels = SENSOR_PIXELS[checkedValue("sensor")] || SENSOR_PIXELS.viirs;
+    el("p-scan").value = pixels.scan;
+    el("p-track").value = pixels.track;
+  });
   el("toggle-sidebar").addEventListener("click", toggleSidebar);
   window.addEventListener("resize", () => { if (state.chartRows.length) drawChart(); });
 
+  el("p-date").addEventListener("input", () => { state.dateTouched = true; });
   initTheme();
   applyTheme(checkedValue("palette"), checkedValue("appearance"), false);
   setPin(30.05, 31.2, false);
