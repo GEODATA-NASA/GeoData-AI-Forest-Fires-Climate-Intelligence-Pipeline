@@ -1,0 +1,91 @@
+# GeoData AI - Forest Fires & Climate Intelligence Pipeline
+#
+#   docker compose up -d                      # PostGIS + API (API falls back to CSV until data is loaded)
+#   docker compose run --rm pipeline          # one full pipeline run: extract -> transform -> load -> train
+#   docker compose --profile scheduled up -d  # also start the scheduler that reruns the pipeline periodically
+#
+# Put the NASA FIRMS archives in ./raw_data before running the pipeline.
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: geodata-db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-geodata_db}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT_HOST:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-geodata_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: .
+    image: geodata-ai:latest
+    container_name: geodata-api
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DATA_BACKEND: ${DATA_BACKEND:-auto}
+      API_LOG_FILE: /app/logs/api.log
+    volumes:
+      - ./raw_data:/app/raw_data
+      - ./cleaned_data:/app/cleaned_data
+      - ./modeling/artifacts:/app/modeling/artifacts
+      - ./logs:/app/logs
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  pipeline:
+    image: geodata-ai:latest
+    build: .
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+    volumes:
+      - ./raw_data:/app/raw_data
+      - ./cleaned_data:/app/cleaned_data
+      - ./modeling/artifacts:/app/modeling/artifacts
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python", "main.py"]
+    profiles: ["pipeline"]
+
+  scheduler:
+    image: geodata-ai:latest
+    build: .
+    container_name: geodata-scheduler
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      PIPELINE_INTERVAL_HOURS: ${PIPELINE_INTERVAL_HOURS:-24}
+      PIPELINE_RUN_ON_START: ${PIPELINE_RUN_ON_START:-1}
+    volumes:
+      - ./raw_data:/app/raw_data
+      - ./cleaned_data:/app/cleaned_data
+      - ./modeling/artifacts:/app/modeling/artifacts
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python", "scheduler.py"]
+    restart: unless-stopped
+    profiles: ["scheduled"]
+
+volumes:
+  pgdata:

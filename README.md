@@ -31,6 +31,7 @@ An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and s
 | Database & Spatial | PostgreSQL, PostGIS, SQLAlchemy, Psycopg2 |
 | Machine Learning | scikit-learn (RandomForestClassifier), joblib |
 | API | FastAPI, Uvicorn, Pydantic |
+| Deployment | Docker, Docker Compose (PostGIS image) |
 | Frontend | Leaflet.js, vanilla JavaScript (served by the API) |
 
 **Data sources**
@@ -86,6 +87,9 @@ GEODATA
 │  ├─ train_model.py
 │  └─ artifacts/
 │     └─ high_frp_classifier.joblib
+├─ Dockerfile            # Image for the API and the pipeline
+├─ docker-compose.yml    # PostGIS + API (+ pipeline / scheduler profiles)
+├─ scheduler.py          # Reruns the pipeline on an interval
 ├─ api/                  # FastAPI service
 │  ├─ main.py            # App factory (uvicorn api.main:app)
 │  ├─ settings.py        # API settings from .env
@@ -323,6 +327,53 @@ frontend is hosted elsewhere.
 
 ---
 
+## 🐳 Docker
+
+The repository ships a single image that runs both the API and the pipeline,
+plus a Compose stack with PostGIS.
+
+```bash
+cp .env.example .env          # set DB_PASSWORD at least
+docker compose up -d          # PostGIS + API on http://localhost:8000
+docker compose run --rm pipeline   # extract -> transform -> load -> train (needs raw_data/)
+```
+
+| Service | Role | Started by |
+|---|---|---|
+| `db` | PostgreSQL 16 + PostGIS 3.4, data in the `pgdata` volume | `docker compose up` |
+| `api` | FastAPI + frontend; waits for the database, mounts `cleaned_data/`, `modeling/artifacts/`, `logs/` | `docker compose up` |
+| `pipeline` | One-off `python main.py` run against the stack | `docker compose run --rm pipeline` |
+| `scheduler` | Reruns the pipeline every `PIPELINE_INTERVAL_HOURS` | `docker compose --profile scheduled up -d` |
+
+Until the pipeline has loaded the tables, the API serves from the cleaned CSV
+files if they exist in `cleaned_data/` (see *Data backends*). Host ports are
+set with `API_PORT` and `DB_PORT_HOST` in `.env`.
+
+---
+
+## ⏱️ Scheduled runs
+
+`scheduler.py` reruns `main.py` on an interval without extra dependencies and
+logs to `logs/scheduler.log`. Because every stage is idempotent, repeated runs
+only redo work whose inputs changed.
+
+```bash
+PIPELINE_INTERVAL_HOURS=24 python scheduler.py      # or the Compose "scheduled" profile
+```
+
+| Variable | Purpose |
+|---|---|
+| `PIPELINE_INTERVAL_HOURS` | Hours between runs (default 24, fractions allowed) |
+| `PIPELINE_RUN_ON_START` | Run immediately on start-up (default 1) |
+| `PIPELINE_MAX_RUNS` | Stop after this many runs (unlimited by default) |
+
+For a system scheduler, call the pipeline directly instead:
+
+- cron: `0 3 * * * cd /opt/geodata && .venv/bin/python main.py >> logs/cron.log 2>&1`
+- Windows Task Scheduler: action `python.exe main.py`, "Start in" set to the repository folder.
+
+---
+
 ## ✅ Verify the Load
 
 ```sql
@@ -371,14 +422,15 @@ SELECT ST_AsText(geom) FROM fire_events LIMIT 5;
 - [x] Build a lightweight FastAPI service that connects to the database and serves predictions from the trained model
 - [x] Extend logging to the API layer
 - [x] Build a frontend with interactive maps (Leaflet.js) showing fire locations and predicted severity
-- [ ] Containerize the project with Docker
+- [x] Containerize the project with Docker
+- [x] Schedule automated runs (`scheduler.py` / Compose `scheduled` profile, cron or Task Scheduler)
 - [ ] Build a Power BI dashboard on top of the stored data
 
 **Future ideas**
 
 - [ ] RAG system on top of the stored data and project knowledge
 - [ ] Extend NASA POWER weather coverage to match the full time range of the fire data, increasing the number of training samples and improving precision and recall
-- [ ] Schedule automated runs (cron / Airflow)
+- [ ] Orchestrate runs with Airflow for retries, backfills and a run history
 
 ---
 
