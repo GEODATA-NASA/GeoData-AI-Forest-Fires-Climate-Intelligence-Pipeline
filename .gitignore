@@ -58,3 +58,8 @@ logs/
 
 # Airflow validation venv (Airflow itself runs in Docker)
 .venv-airflow/
+
+# Power BI files and backups
+NASA.pbix
+*.pbix
+.pbi/
