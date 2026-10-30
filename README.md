@@ -29,10 +29,13 @@ An end-to-end wildfire analytics platform built on open NASA data. It ingests sa
 - [Configuration Reference](#️-configuration-reference)
 - [Logging](#-logging)
 - [Tests](#-tests)
+- [CI/CD (GitHub Actions)](#-cicd-github-actions)
 - [Verify the Load](#-verify-the-load)
 - [Troubleshooting](#-troubleshooting)
 - [Roadmap](#️-roadmap)
+- [Business Model (Concept)](#-business-model-concept)
 - [License and Data Attribution](#-license-and-data-attribution)
+- [Contribution](#-Contribution)
 
 ---
 
@@ -50,6 +53,8 @@ An end-to-end wildfire analytics platform built on open NASA data. It ingests sa
 - **Ask the data**: a Claude-powered assistant that answers questions using read-only data tools and a documentation search.
 - **Orchestration**: an Airflow DAG with retries, a dependency-free interval scheduler, and a Docker Compose setup.
 - **Structured logging** for the pipeline, the API, and the scheduler.
+- **CI/CD**: GitHub Actions runs the tests, builds the Docker image, and publishes it to GitHub Container Registry on every push to `main`.
+- **Windows one-click launcher** (`scripts/start_app.cmd`) that starts the API and opens the map.
 
 ---
 
@@ -67,6 +72,7 @@ An end-to-end wildfire analytics platform built on open NASA data. It ingests sa
 | Deployment | Docker, Docker Compose (PostGIS image) |
 | Orchestration | Apache Airflow 3 (DAG), `scheduler.py` |
 | Testing | pytest, httpx |
+| CI/CD | GitHub Actions, GitHub Container Registry (GHCR) |
 
 **Data sources**
 
@@ -115,7 +121,15 @@ GeoData-AI-Forest-Fires-Climate-Intelligence-Pipeline
 ├─ Dockerfile               # One image for the API (default) and the pipeline
 ├─ docker-compose.yml       # PostGIS + API, plus pipeline / scheduler / airflow profiles
 ├─ .env.example             # Template for every environment variable
+├─ .dockerignore            # Keeps secrets (.env), data, logs, virtual environments, and Git history out of the image
 ├─ LICENSE                  # MIT
+│
+├─ .github/
+│  └─ workflows/
+│     └─ ci.yml             # CI/CD: test → build → publish image to GHCR
+├─ scripts/
+│  ├─ start_app.cmd         # Windows one-click launcher: starts the API and opens the map
+│  └─ geodata.ico           # Icon for a desktop shortcut to the launcher
 │
 ├─ raw_data/                # (not in Git) FIRMS archives and the downloaded NASA POWER weather
 │  └─ power_cache/          #   Cached POWER tile responses (created by the extractor)
@@ -158,7 +172,6 @@ GeoData-AI-Forest-Fires-Climate-Intelligence-Pipeline
 │  ├─ tasks.py              # Pipeline stages as plain task functions
 │  ├─ dags/geodata_pipeline.py  # Airflow DAG
 │  └─ airflow.Dockerfile    # Airflow image with the project's dependencies
-├─ scripts/                 # start_app.cmd: one-click start on Windows, plus geodata.ico
 └─ tests/                   # pytest suite (API, assistant, SQL repository, loader, DAG, weather download)
 ```
 
@@ -173,15 +186,6 @@ GeoData-AI-Forest-Fires-Climate-Intelligence-Pipeline
 - The NASA FIRMS archive CSV files (see step 3)
 - Internet access for the NASA POWER API
 - Optional: an Anthropic API key for the assistant
-
-### Quick start on Windows (one click)
-
-Double-click `scripts/start_app.cmd` (or a desktop shortcut pointing to it). On
-first run it creates `.venv` and installs the requirements; then it starts the
-API and opens the map in the browser once the data has loaded. Keep the window
-open while you use the app and close it to stop. If the app is already running
-it just opens the browser. Optional: `GEODATA_PORT=8001` for another port.
-The data must be in `CLEANED_DATA_DIR` (or in PostgreSQL), as set in `.env`.
 
 ### 1. Clone and install
 
@@ -253,6 +257,8 @@ uvicorn api.main:app --reload
 | `http://localhost:8000/docs` | Interactive API reference (Swagger UI) |
 | `http://localhost:8000/redoc` | ReDoc API reference |
 | `http://localhost:8000/health` | Service, database, and model status |
+
+**Windows shortcut:** double-click `scripts/start_app.cmd`. On the first run it creates a `.venv`, installs `requirements.txt`, then starts the API on `127.0.0.1:8000` and opens the browser once the data has loaded (about 20 seconds). If the app is already running it only opens the browser. Set `GEODATA_PORT` to use another port or `GEODATA_NO_BROWSER=1` to skip opening the browser. Close the window to stop the server. Python 3.10 or newer must be installed.
 
 ---
 
@@ -607,6 +613,53 @@ The suite runs against a tiny fire and weather dataset served through the CSV ba
 
 ---
 
+## 🚦 CI/CD (GitHub Actions)
+
+The workflow in `.github/workflows/ci.yml` (named **CI/CD**) checks every change and publishes a ready-to-run Docker image.
+
+**Triggers**
+
+| Event | When |
+|---|---|
+| `pull_request` | Pull requests targeting `main` (test and build only) |
+| `push` | Every push to `main` (test, build, and publish) |
+| `workflow_dispatch` | Manual run from the Actions tab (publishes only when run on `main`) |
+
+**Jobs**
+
+```text
+ ┌────────┐
+ │  Test  │──┐
+ └────────┘  ├──▶ ┌──────────────────────────┐
+ ┌────────┐  │    │ Publish image to GHCR    │   (push to main / manual run on main)
+ │ Build  │──┘    └──────────────────────────┘
+ └────────┘
+```
+
+| Job | What it does |
+|---|---|
+| **Test** | Sets up Python 3.12 with pip caching, installs `requirements-dev.txt`, and runs `python -m pytest`. The Airflow DAG test is skipped because Airflow is not installed in this job. |
+| **Build Docker image** | Builds the `Dockerfile` with Docker Buildx without pushing it, to prove that the image still builds on every pull request. |
+| **Publish image to GHCR** | Runs only after **Test** and **Build** both pass. Logs in to `ghcr.io` with the built-in `GITHUB_TOKEN`, builds the image, and pushes it with two tags: `latest` and the full commit SHA. Uses the GitHub Actions layer cache to speed up builds. |
+
+**Safety details**
+
+- The workflow has read-only repository permissions by default; only the publish job is granted `packages: write`.
+- No extra secrets are needed. Publishing uses the automatic `GITHUB_TOKEN`.
+- Concurrent runs for the same pull request or branch are grouped, and an older pull-request run is cancelled when a new commit is pushed.
+
+**Using the published image**
+
+```bash
+docker pull ghcr.io/geodata-nasa/geodata-ai-forest-fires-climate-intelligence-pipeline:latest
+```
+
+Use the `sha-<commit>` tag to pin an exact version. New GHCR packages are private by default, so change the package visibility in the repository's package settings if you want others to pull the image without logging in.
+
+> This pipeline covers continuous integration and continuous delivery of the image. It does not deploy to a server; deployment is done with Docker Compose or your own platform (see [Docker](#-docker)).
+
+---
+
 ## ✅ Verify the Load
 
 ```sql
@@ -647,6 +700,8 @@ Or ask the running API: `curl http://localhost:8000/health`.
 
 ## 🗺️ Roadmap
 
+**Completed**
+
 - [x] Project structure, centralized configuration, and dependency management
 - [x] ETL pipeline for NASA FIRMS (MODIS and VIIRS) and NASA POWER data
 - [x] Global weather coverage with a resumable tile cache
@@ -660,7 +715,97 @@ Or ask the running API: `curl http://localhost:8000/health`.
 - [x] Docker and Docker Compose setup
 - [x] Scheduling with `scheduler.py` and an Airflow DAG
 - [x] Automated test suite
-- [x] Power BI dashboard on top of the stored data
+- [x] CI/CD with GitHub Actions: tests, Docker build, and image publishing to GHCR
+- [x] Windows one-click launcher
+
+**Next steps**
+
+- [ ] Power BI dashboard on top of the stored data
+- [ ] Automated deployment step (for example to a cloud host) after the image is published
+- [ ] Authentication and rate limiting for the API, especially `/api/v1/ask`
+- [ ] Model improvements: try gradient boosting and richer weather features, since weather currently contributes modestly to the score
+- [ ] Train on a larger share of the data (raise `MAX_TRAINING_ROWS`) and track metrics across retrains
+
+**Future ideas**
+
+- [ ] A fire-occurrence model, which would need labelled no-fire observations
+- [ ] Embedding-based retrieval for the assistant's documentation search
+
+---
+
+## 💼 Business Model (Concept)
+
+> This section describes how GeoData AI could become a sustainable product. It is a set of hypotheses to validate with real users, not a description of a running business. Prices are intentionally left out until they are tested with customers.
+
+### Where the project stands today
+
+| Available today | Needed before it can be sold |
+|---|---|
+| Automated, resumable pipeline over global NASA FIRMS and POWER data (refreshed on a schedule, daily by default) | Near-real-time ingestion if customers need alerts within hours |
+| Severity scoring API, interactive map, and natural-language assistant | API keys, authentication, rate limiting, and usage metering |
+| Docker, Airflow, and CI/CD for repeatable deployment | Multi-tenant isolation, monitoring, and a service-level agreement |
+| Chronologically validated model (ROC-AUC 0.889) | A fire-occurrence or risk model and validation against customer data |
+| Roadmap item: Power BI dashboard | Power BI connectors and report templates |
+
+### Value proposition
+
+The raw satellite and weather data are free. The value is in turning them into something usable:
+
+- **Fusion and scoring**: fire detections joined to same-day weather and scored for expected severity.
+- **Ready-to-use access**: one REST API, a map, and plain-language questions, instead of raw CSV archives.
+- **Automation and reproducibility**: a pipeline that refreshes itself and can run on the customer's own infrastructure with Docker.
+
+### Customer segments (start narrow)
+
+| Priority | Segment | Why |
+|---|---|---|
+| 1 | Developers, researchers, universities, and NGOs | Lowest cost to reach, fastest feedback, fits an open-core model |
+| 2 | Agriculture, forestry, and utility operations teams monitoring land or assets | Clear operational use of severity and location data |
+| 3 | Civil protection and environmental agencies | Strong fit, but long procurement cycles; often funded through tenders and grants |
+| 4 | Insurance and reinsurance | Large market, but underwriting needs property-level risk models, validation, and compliance that the current severity model does not provide |
+
+### Revenue streams
+
+- **Open core + managed API**: the code stays open source; a hosted API offers a free rate-limited tier and paid usage-based tiers.
+- **Subscriptions** for hosted dashboards, alerts, and scheduled reports (including Power BI connectors once built).
+- **Enterprise and self-hosted support**: paid support, onboarding, and service-level agreements for organizations that run the Docker or Airflow deployment themselves.
+- **Professional services**: custom data pipelines, regional deployments, and integrations.
+- **Grants and sponsorship**: climate-tech and research funding as early, non-dilutive income.
+
+### Cost structure
+
+- Cloud hosting and storage (tens of millions of detections in PostgreSQL/PostGIS, plus compute for training and the API).
+- Claude API usage for the assistant, which costs money per question and should be rate limited and capped.
+- Engineering and maintenance, including model monitoring and retraining.
+- Support, security, and compliance work.
+
+### Key partnerships
+
+- **NASA FIRMS and NASA POWER** as data providers (follow their attribution and usage terms).
+- **Cloud providers** for startup credits and hosting.
+- **Universities, forestry agencies, and civil protection bodies** as pilot partners and sources of ground-truth validation.
+- **GIS and business-intelligence vendors** for connectors such as Power BI.
+
+### Competition and defensibility
+
+Free tools already show active fires (NASA's own FIRMS map is one), so selling the data itself is not defensible. Defensibility has to come from scoring quality, reliability, integration into customers' workflows (alerts, reports, APIs), local context, and the option to self-host.
+
+### Risks and assumptions
+
+- The model scores the severity of **detected** fires; it does not predict where a fire will start. It must not be marketed as a fire-risk or underwriting model.
+- Weather contributes modestly to the current model (feature importances between 0.007 and 0.021), so accuracy claims should rest on the measured metrics only.
+- Data freshness depends on the pipeline schedule; the product is not real-time unless ingestion is extended.
+- Commercial use of NASA open data should be checked against the providers' current terms.
+- Dependence on public third-party APIs (for example NASA POWER rate limits).
+- Predictions are decision support, not a sole basis for emergency decisions.
+- Demand and willingness to pay are unvalidated.
+
+### Validation plan
+
+1. Interview 10 to 20 potential users in the top two segments.
+2. Run a pilot with one forestry, agriculture, or civil-protection organization and agree on success metrics (for example precision on severe detections and alert lead time).
+3. Add authentication, rate limiting, and usage metering to the API.
+4. Only then set pricing, based on the value delivered and on what the pilot users say they would pay.
 
 ---
 
@@ -669,3 +814,13 @@ Or ask the running API: `curl http://localhost:8000/health`.
 This project is licensed under the [MIT License](LICENSE).
 
 **Data attribution:** fire detection data comes from [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) (NASA LANCE), and weather data from the NASA POWER API. Please refer to each provider's terms of use and citation requirements when reusing the data.
+
+---
+
+## ☕ Contribution 
+
+Welcomed contributions, ideas and discussions!
+
+If you find it useful, please ⭐ or buy us a coffee! 🙏
+
+[![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/george_samer)
