@@ -1,27 +1,55 @@
 # 🌍 GeoData AI: Forest Fires & Climate Intelligence Pipeline
 
-An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and stores satellite-based active fire detections (NASA FIRMS) together with climate indicators (NASA POWER) in a PostgreSQL/PostGIS spatial database, and trains a GeoAI model that classifies wildfire severity (high FRP) to support wildfire analysis and early-warning systems.
+An end-to-end wildfire analytics platform built on open NASA data. It ingests satellite fire detections (NASA FIRMS: MODIS and VIIRS) together with daily weather (NASA POWER), cleans and stores them in PostgreSQL/PostGIS, trains a machine-learning model that estimates how **severe** a detected fire is, and serves everything through a FastAPI service, an interactive Leaflet map, and a natural-language "ask the data" assistant powered by Claude.
+
+```text
+ NASA FIRMS + NASA POWER ──▶ ETL pipeline ──▶ PostgreSQL/PostGIS ──▶ RandomForest model
+                                                      │                      │
+                                                      └──────▶ FastAPI ◀─────┘
+                                                                 │
+                                                  Leaflet map  ·  Ask-the-data assistant
+```
+
+---
+
+## 📑 Table of Contents
+
+- [Features](#-features)
+- [Technology Stack](#️-technology-stack)
+- [Architecture](#-architecture)
+- [Project Structure](#-project-structure)
+- [Getting Started](#-getting-started)
+- [The Pipeline in Detail](#-the-pipeline-in-detail)
+- [GeoAI Model](#-geoai-model)
+- [API (FastAPI)](#-api-fastapi)
+- [Frontend (Leaflet map)](#️-frontend-leaflet-map)
+- [Ask the Data (assistant)](#-ask-the-data-assistant)
+- [Docker](#-docker)
+- [Scheduling and Airflow](#️-scheduling-and-airflow)
+- [Configuration Reference](#️-configuration-reference)
+- [Logging](#-logging)
+- [Tests](#-tests)
+- [Verify the Load](#-verify-the-load)
+- [Troubleshooting](#-troubleshooting)
+- [Roadmap](#️-roadmap)
+- [License and Data Attribution](#-license-and-data-attribution)
 
 ---
 
 ## ✨ Features
 
-- Merges multiple NASA FIRMS archives (MODIS and VIIRS) into a single standardized fire dataset containing millions of records.
-- Pulls daily meteorological parameters (humidity, precipitation, soil moisture) from the NASA POWER API.
-- Cleans, validates, and standardizes data into analysis-ready CSV files.
-- Efficiently bulk-loads results into PostgreSQL/PostGIS (`fire_events` and `weather_data` tables) for spatial queries.
-- Trains a `RandomForestClassifier` to classify high-severity fires, using a proper temporal split to avoid data leakage.
-- Saves the trained pipeline as a reusable artifact (`high_frp_classifier.joblib`).
-- Runs end to end with a single command (`python main.py`) through a pipeline orchestrator.
-- Idempotent execution: each stage skips work that has already been done (existing files, tables, or a saved model).
-- Data-quality validation (`validate_fire_data`) that runs once and is skipped on later runs via a flag file.
-- Structured logging to `logs/pipeline.log` for progress, warnings, and errors.
-- Keeps all credentials in environment variables, with centralized configuration.
-- **FastAPI service** (`api/`) that queries the database and serves fire detections, GeoJSON, statistics and **severity predictions** from the trained model, with request logging to `logs/api.log`.
-- **Global weather coverage**: NASA POWER humidity, precipitation and soil wetness for every place and day with fires, downloaded tile by tile from the POWER regional endpoint, resumable and cached.
-- **Airflow DAG** that runs the stages as retryable tasks, plus a dependency-free scheduler for single machines.
-- **Ask the data**: a question-answering assistant (Claude with read-only data tools and a documentation search) at `POST /api/v1/ask` and in the frontend.
-- **Interactive map frontend** (`frontend/`, Leaflet.js) showing fire locations coloured by predicted severity, daily statistics and a click-to-predict tool.
+- **One-command pipeline**: `python main.py` runs weather extraction, cleaning, database loading, and model training in order.
+- **Global fire coverage**: merges the NASA FIRMS MODIS and VIIRS (NOAA-20 and Suomi NPP) archives into one standardized dataset of tens of millions of detections, processed in chunks.
+- **Global weather coverage**: downloads NASA POWER humidity, precipitation, and soil wetness for every place and day that has fires, tile by tile, with a resumable cache.
+- **Idempotent stages**: every stage skips work whose output is already current, so repeat runs are cheap and a failed run can simply be restarted.
+- **Safe database loading**: uploads go to a staging table that is swapped in inside one transaction, so a crash never leaves a half-loaded table behind.
+- **Data-quality validation**: coordinates, brightness, and FRP are checked and duplicates removed; the check runs once and is recorded with a flag file.
+- **Severity model**: a `RandomForestClassifier` estimates the probability that a detected fire has a fire radiative power (FRP) of at least 10 MW, evaluated on a chronological hold-out.
+- **REST API**: filtered fire queries, GeoJSON for maps, aggregate statistics, single and batch predictions, with PostgreSQL or CSV storage and graceful degradation.
+- **Interactive map**: fires coloured by predicted severity, daily statistics, filters, and a click-to-predict tool.
+- **Ask the data**: a Claude-powered assistant that answers questions using read-only data tools and a documentation search.
+- **Orchestration**: an Airflow DAG with retries, a dependency-free interval scheduler, and a Docker Compose setup.
+- **Structured logging** for the pipeline, the API, and the scheduler.
 
 ---
 
@@ -29,87 +57,109 @@ An automated ETL (Extract, Transform, Load) pipeline that ingests, cleans, and s
 
 | Layer | Tools |
 |---|---|
-| Language | Python 3.10 – 3.14 |
-| ETL / Processing | Pandas, Requests |
-| Database & Spatial | PostgreSQL, PostGIS, SQLAlchemy, Psycopg2 |
-| Machine Learning | scikit-learn (RandomForestClassifier), joblib |
+| Language | Python 3.10 – 3.12 |
+| ETL / Processing | Pandas, NumPy, Requests |
+| Database | PostgreSQL, PostGIS, SQLAlchemy, Psycopg2 |
+| Machine Learning | scikit-learn (RandomForestClassifier, BallTree), joblib |
 | API | FastAPI, Uvicorn, Pydantic |
-| Deployment | Docker, Docker Compose (PostGIS image) |
-| Orchestration | Apache Airflow 3 (DAG), `scheduler.py` |
 | Assistant | Anthropic Claude API (`anthropic` SDK), TF-IDF retrieval over project docs |
 | Frontend | Leaflet.js, vanilla JavaScript (served by the API) |
+| Deployment | Docker, Docker Compose (PostGIS image) |
+| Orchestration | Apache Airflow 3 (DAG), `scheduler.py` |
+| Testing | pytest, httpx |
 
 **Data sources**
 
 - **[NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/)** (NASA LANCE): MODIS and VIIRS active fire archives
-- **NASA POWER API**: daily humidity, precipitation, and soil moisture
+- **NASA POWER API**: daily relative humidity (`RH2M`), precipitation (`PRECTOTCORR`), and surface soil wetness (`GWETTOP`)
 
 ---
 
-## 🔄 Pipeline Overview
+## 🧭 Architecture
 
 ```text
- ┌──────────────┐     ┌─────────────────┐     ┌──────────────────┐     ┌──────────────────┐
- │   Extract    │ ──▶ │    Transform    │ ──▶ │       Load       │ ──▶ │      Model       │
- │ NASA FIRMS   │     │ Clean, merge,   │     │ PostgreSQL +     │     │ RandomForest     │
- │ NASA POWER   │     │ standardize     │     │ PostGIS          │     │ high-FRP         │
- │              │     │ → cleaned_data/ │     │ fire_events,     │     │ classifier       │
- │              │     │                 │     │ weather_data     │     │ → .joblib        │
- └──────────────┘     └─────────────────┘     └──────────────────┘     └──────────────────┘
+ ┌──────────────┐   ┌─────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+ │   Extract    │ ─▶│    Transform    │ ─▶│       Load       │ ─▶│      Model       │
+ │ NASA POWER   │   │ Clean, validate,│   │ PostgreSQL       │   │ RandomForest     │
+ │ (grid tiles) │   │ standardize     │   │ fire_events      │   │ high-FRP         │
+ │ FIRMS CSVs   │   │ → cleaned_data/ │   │ weather_data     │   │ classifier       │
+ │ in raw_data/ │   │                 │   │                  │   │ → .joblib        │
+ └──────────────┘   └─────────────────┘   └──────────────────┘   └──────────────────┘
+                                                   │                       │
+                                                   ▼                       ▼
+                                          ┌─────────────────────────────────────┐
+                                          │  FastAPI  (api/)                    │
+                                          │  repositories · predictor · weather │
+                                          │  index · assistant                  │
+                                          └──────────────┬──────────────────────┘
+                                                         │
+                                       ┌─────────────────┴──────────────────┐
+                                       │ Leaflet frontend (frontend/)       │
+                                       │ REST clients · Ask-the-data        │
+                                       └────────────────────────────────────┘
 ```
 
-All stages are coordinated by `main.py`, which runs them in order: `NASA_POWER.py` ➔ `transform.py` ➔ `load.py` ➔ `train_model.py`.
+The pipeline stages are coordinated by `main.py` (or by the Airflow DAG), and the API reads the same database and the same model artifact the pipeline produces.
 
 ---
 
 ## 📂 Project Structure
 
 ```text
-GEODATA
-├─ .env                  # Environment variables (DB credentials) – never commit
-├─ .env.example          # Template for environment configuration
-├─ main.py               # Pipeline orchestrator (single entry point)
-├─ config.py             # Centralized configuration loader
-├─ requirements.txt
-├─ logs/                 # Pipeline logs
-│  └─ pipeline.log
-├─ raw_data/             # Original datasets downloaded from NASA
-│  ├─ fire_archive_J1V-C2_820252.csv
-│  ├─ fire_archive_M-C61_820251.csv
-│  ├─ fire_archive_SV-C2_820253.csv
-│  └─ nasa_power_weather.csv
-├─ cleaned_data/         # Cleaned, structured output
-│  ├─ cleaned_master_fires.csv
-│  ├─ cleaned_weather.csv
-│  └─ .fire_validated.flag   # Marks that data-quality validation already passed
-├─ integration/          # Extraction scripts (API fetchers)
-│  └─ NASA_POWER.py
-├─ transformation/       # Cleaning and standardization
-│  └─ transform.py
-├─ loadation/            # Database loading
-│  └─ load.py
-├─ modeling/             # Model training
-│  ├─ train_model.py
+GeoData-AI-Forest-Fires-Climate-Intelligence-Pipeline
+├─ main.py                  # Pipeline orchestrator: weather → transform → load → train
+├─ config.py                # Loads .env; DB settings, data directories, pipeline logging
+├─ scheduler.py             # Dependency-free interval scheduler that reruns main.py
+├─ requirements.txt         # Runtime dependencies
+├─ requirements-dev.txt     # Adds pytest and httpx
+├─ Dockerfile               # One image for the API (default) and the pipeline
+├─ docker-compose.yml       # PostGIS + API, plus pipeline / scheduler / airflow profiles
+├─ .env.example             # Template for every environment variable
+├─ LICENSE                  # MIT
+│
+├─ raw_data/                # (not in Git) FIRMS archives and the downloaded NASA POWER weather
+│  └─ power_cache/          #   Cached POWER tile responses (created by the extractor)
+├─ cleaned_data/            # (not in Git) cleaned CSVs and the validation flag
+├─ logs/                    # (not in Git) pipeline.log, api.log, scheduler.log
+│
+├─ integration/
+│  └─ NASA_POWER.py         # Extract: downloads daily weather for the places and dates with fires
+├─ transformation/
+│  └─ transform.py          # Transform: cleans FIRMS and POWER data into analysis-ready CSVs
+├─ utils/
+│  └─ quality_checks.py     # validate_fire_data(): coordinate, brightness, FRP, duplicate checks
+├─ loadation/
+│  └─ load.py               # Load: bulk upload to PostgreSQL through staging tables
+├─ modeling/
+│  ├─ train_model.py        # Builds the training set, trains and evaluates the classifier
 │  └─ artifacts/
-│     └─ high_frp_classifier.joblib
-├─ Dockerfile            # Image for the API and the pipeline
-├─ docker-compose.yml    # PostGIS + API (+ pipeline / scheduler profiles)
-├─ scheduler.py          # Reruns the pipeline on an interval
-├─ orchestration/        # Stage task functions + Airflow DAG (orchestration/dags/)
-├─ api/                  # FastAPI service
-│  ├─ main.py            # App factory (uvicorn api.main:app)
-│  ├─ settings.py        # API settings from .env
-│  ├─ logging_config.py  # Request logging -> logs/api.log
-│  ├─ predictor.py       # Loads the model, builds features, matches weather
-│  ├─ weather_index.py   # Same-day nearest-station lookup (as in training)
-│  ├─ repositories/      # Data access: PostgreSQL or CSV fallback
-│  ├─ assistant/         # Claude Q&A: tools, knowledge base, tool loop
-│  ├─ routers/           # /health, /api/v1/fires, /api/v1/weather, /api/v1/predict, /api/v1/ask
-│  ├─ tools_make_sample.py     # Build cleaned_data/fires_sample.csv for the CSV backend
-│  └─ tools_create_indexes.py  # Create PostgreSQL indexes used by the API
-├─ frontend/             # Leaflet map UI (index.html, app.js, style.css)
-├─ tests/                # pytest suite for the API
-└─ README.md
+│     └─ high_frp_classifier.joblib   # Trained pipeline + metadata (committed)
+│
+├─ api/                     # FastAPI service
+│  ├─ main.py               # App factory (uvicorn api.main:app), lifespan, routers, static frontend
+│  ├─ settings.py           # API settings from environment variables
+│  ├─ deps.py               # Dependencies and the shared fire-filter parser
+│  ├─ filters.py            # FireFilters shared by all backends
+│  ├─ schemas.py            # Pydantic request/response models
+│  ├─ serialization.py      # DataFrame → JSON-safe records
+│  ├─ runtime.py            # Shared state: repository, model, refreshable caches
+│  ├─ predictor.py          # Loads the model, builds features, serves predictions
+│  ├─ weather_index.py      # Same-day nearest-neighbour weather lookup (BallTree)
+│  ├─ logging_config.py     # Rotating api.log and per-request logging middleware
+│  ├─ version.py            # API version
+│  ├─ routers/              # health, fires, weather, predict, assistant endpoints
+│  ├─ repositories/         # Data access: postgres.py, csv_backend.py, base.py
+│  ├─ assistant/            # service.py (tool loop), tools.py, knowledge.py (docs retrieval)
+│  ├─ tools_make_sample.py  # Builds a random sample CSV for the CSV backend
+│  └─ tools_create_indexes.py   # Creates the PostgreSQL indexes the API relies on
+│
+├─ frontend/                # Leaflet map UI: index.html, app.js, style.css
+├─ orchestration/
+│  ├─ tasks.py              # Pipeline stages as plain task functions
+│  ├─ dags/geodata_pipeline.py  # Airflow DAG
+│  └─ airflow.Dockerfile    # Airflow image with the project's dependencies
+├─ scripts/                 # start_app.cmd: one-click start on Windows, plus geodata.ico
+└─ tests/                   # pytest suite (API, assistant, SQL repository, loader, DAG, weather download)
 ```
 
 ---
@@ -118,19 +168,31 @@ GEODATA
 
 ### Prerequisites
 
-- Python 3.10 – 3.14
-- PostgreSQL 14+ with the PostGIS extension installed
+- Python 3.10 – 3.12
+- PostgreSQL 14+ with the PostGIS extension (or use the Docker setup, which provides it)
+- The NASA FIRMS archive CSV files (see step 3)
+- Internet access for the NASA POWER API
+- Optional: an Anthropic API key for the assistant
 
-### 1. Clone and install dependencies
+### Quick start on Windows (one click)
+
+Double-click `scripts/start_app.cmd` (or a desktop shortcut pointing to it). On
+first run it creates `.venv` and installs the requirements; then it starts the
+API and opens the map in the browser once the data has loaded. Keep the window
+open while you use the app and close it to stop. If the app is already running
+it just opens the browser. Optional: `GEODATA_PORT=8001` for another port.
+The data must be in `CLEANED_DATA_DIR` (or in PostgreSQL), as set in `.env`.
+
+### 1. Clone and install
 
 ```bash
-git clone <your-repo-url>
-cd GEODATA
+git clone https://github.com/GEODATA-NASA/GeoData-AI-Forest-Fires-Climate-Intelligence-Pipeline.git
+cd GeoData-AI-Forest-Fires-Climate-Intelligence-Pipeline
 
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 
-pip install -r requirements.txt
+pip install -r requirements.txt   # use requirements-dev.txt to also run the tests
 ```
 
 ### 2. Prepare the database
@@ -141,365 +203,407 @@ CREATE DATABASE geodata_db;
 CREATE EXTENSION IF NOT EXISTS postgis;
 ```
 
-### 3. Configure environment variables
+### 3. Add the FIRMS archives
 
-Copy `.env.example` to `.env` and fill in your credentials:
+Download the MODIS and VIIRS archive CSVs from [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) and place them in `raw_data/` using these file names (they are defined in `config.py`):
+
+| Satellite source | Expected file |
+|---|---|
+| `modis` | `raw_data/fire_archive_M-C61_820251.csv` |
+| `viirs_j1` (NOAA-20) | `raw_data/fire_archive_J1V-C2_820252.csv` |
+| `viirs_suomi` (Suomi NPP) | `raw_data/fire_archive_SV-C2_820253.csv` |
+
+The folder can be moved with `RAW_DATA_DIR` and `CLEANED_DATA_DIR`. Weather is downloaded automatically; you do not provide it.
+
+### 4. Configure environment variables
+
+```bash
+cp .env.example .env
+```
+
+At minimum set the database credentials:
 
 ```env
 DB_NAME=geodata_db
 DB_USER=postgres
-DB_PASSWORD=your_actual_password
+DB_PASSWORD=your_password_here
 DB_HOST=localhost
 DB_PORT=5432
 ```
 
-### 4. Run the pipeline
+Every other variable is optional and documented in [Configuration Reference](#️-configuration-reference).
 
-Run the whole pipeline with a single command:
+### 5. Run the pipeline
 
 ```bash
 python main.py
 ```
 
-`main.py` executes the stages in order:
+The first run downloads weather for the whole fire footprint (a few hundred POWER requests, resumable), cleans both datasets, loads the database, and trains the model. Later runs skip whatever is already done.
 
-1. `integration/NASA_POWER.py`: fetch weather data from NASA POWER
-2. `transformation/transform.py`: clean and standardize all datasets
-3. `loadation/load.py`: load into PostgreSQL/PostGIS
-4. `modeling/train_model.py`: train the high-FRP classification model
+### 6. Start the API and open the map
 
-You can still run any stage on its own, for example `python modeling/train_model.py`.
+```bash
+uvicorn api.main:app --reload
+```
+
+| URL | What it serves |
+|---|---|
+| `http://localhost:8000/` | The Leaflet map |
+| `http://localhost:8000/docs` | Interactive API reference (Swagger UI) |
+| `http://localhost:8000/redoc` | ReDoc API reference |
+| `http://localhost:8000/health` | Service, database, and model status |
+
+---
+
+## 🔄 The Pipeline in Detail
+
+`main.py` runs the stages below in order and exits with status 1 (after logging the traceback) if any stage fails. Each stage can also be run on its own.
+
+### Stage 1: Extract weather (`integration/NASA_POWER.py`)
+
+Downloads NASA POWER daily weather (`RH2M`, `PRECTOTCORR`, `GWETTOP`) for the places and dates that have fires. Two modes, selected with `WEATHER_COVERAGE`:
+
+| Mode | Behaviour |
+|---|---|
+| `grid` (default) | Scans the fire data to find where and when fires occurred, then downloads weather for those places over the full fire date range using the POWER **regional** endpoint. Each request returns a whole 10° × 10° tile on the native 0.5° × 0.625° grid. Points are thinned to `WEATHER_GRID_LAT_STEP` × `WEATHER_GRID_LON_STEP` (default 1.0° × 1.25°), so every fire lies within about 90 km of a weather point, inside the 100 km matching radius used for training and serving. |
+| `point` | The original behaviour: one location (`WEATHER_LATITUDE`, `WEATHER_LONGITUDE`) between `WEATHER_START` and `WEATHER_END`. |
+
+Details worth knowing:
+
+- Raw tile responses are cached under `raw_data/power_cache/`, so an interrupted download resumes where it stopped.
+- Requests retry with exponential backoff on throttling and server errors, and pause `WEATHER_REQUEST_PAUSE` seconds between calls to be polite to the public API.
+- A manifest file next to the weather CSV records what was downloaded. If the file and manifest still match the fire data, the stage is skipped.
+- The output keeps one format in both modes: `date, RH2M, PRECTOTCORR, GWETTOP, latitude, longitude`.
+
+### Stage 2: Transform (`transformation/transform.py`)
+
+**Fires** (`transform_fire_data`): reads each configured FIRMS archive in chunks of 100,000 rows and, for every chunk:
+
+- lower-cases and trims the column names and adds `satellite_source` (`modis`, `viirs_j1`, `viirs_suomi`);
+- parses `acq_date` and drops rows without coordinates;
+- converts VIIRS confidence labels to numbers (`l` → 25, `n` → 50, `h` → 100) and casts `type` and `acq_time` to integers;
+- runs `validate_fire_data` (see below);
+- appends the result to `cleaned_data/cleaned_master_fires.csv`.
+
+**Weather** (`transform_weather_data`): drops rows without a date or coordinates, converts POWER's `-999` fill value to missing, drops rows where every climate value is missing, and writes `cleaned_data/cleaned_weather.csv` atomically.
+
+**Data-quality checks** (`utils/quality_checks.py`): `validate_fire_data` keeps only rows with valid coordinates (latitude −90..90, longitude −180..180), brightness above zero, FRP of zero or more, and removes fully duplicated rows. It logs how many rows were dropped and can raise if nothing is left. When an already-cleaned file is found, it is validated once and `cleaned_data/.fire_validated.flag` is written; later runs skip the heavy check unless the cleaned file is newer than the flag.
+
+### Stage 3: Load (`loadation/load.py`)
+
+Uploads the cleaned CSVs to PostgreSQL with pandas and SQLAlchemy:
+
+- **`fire_events`**: one row per satellite detection. Columns: `latitude`, `longitude`, `brightness`, `scan`, `track`, `acq_date`, `acq_time`, `satellite`, `instrument`, `confidence`, `version`, `bright_t31`, `frp`, `daynight`, `type`, `satellite_source`.
+- **`weather_data`**: one row per grid point per day. Columns: `date`, `RH2M`, `PRECTOTCORR`, `GWETTOP`, `latitude`, `longitude`.
+
+Each table is first written to a `*_staging` table in chunks, then swapped into place in one transaction (drop old, rename staging, create an index on `acq_date` or `date`). A crashed upload therefore never replaces a good table. For heavier API workloads, run `python -m api.tools_create_indexes` to add the remaining indexes (see [API](#-api-fastapi)).
+
+### Stage 4: Train (`modeling/train_model.py`)
+
+Builds the training set, trains the classifier, evaluates it on a chronological hold-out, and saves the artifact. See [GeoAI Model](#-geoai-model).
 
 ### Smart execution (skip logic)
 
-Each stage checks whether its output already exists and skips the work if so, which saves time and avoids repeating expensive steps:
-
 | Stage | Skipped when |
 |---|---|
-| Extraction | The weather data file already exists |
-| Transformation | The cleaned CSV files already exist |
-| Loading | The target tables already exist in the database |
-| Training | The saved model already exists at `modeling/artifacts/high_frp_classifier.joblib` |
+| Weather extraction | The weather CSV exists and its manifest matches the fire footprint, date range, and grid (point mode: the file exists) |
+| Fire transformation | `cleaned_master_fires.csv` already exists (it is validated once, then flagged) |
+| Weather transformation | `cleaned_weather.csv` exists and the raw weather file has not changed since |
+| Fire loading | `fire_events` already contains rows |
+| Weather loading | `weather_data` already has the same number of rows as the cleaned file (a different count triggers a reload, so an extended download reaches the database) |
+| Training | The model artifact already exists (set `FORCE_RETRAIN=1` to retrain) |
 
-To force a stage to run again, delete its output (file, table, or saved model) and rerun `python main.py`.
-
-### Data-quality checks
-
-`validate_fire_data` checks the fire dataset the first time the pipeline runs. After a successful validation it writes the flag file `cleaned_data/.fire_validated.flag`, and later runs use that flag to skip the heavy checks. Delete the flag file to force revalidation.
-
-### Logging
-
-Pipeline progress, warnings, and errors are written to `logs/pipeline.log` instead of relying on plain `print` output. Check this file first when a run fails.
+To force a stage to run again, remove its output (file, table, or artifact) and rerun `python main.py`. To rebuild `fire_events` after changing the fire data, drop the table first, because the loader never reloads a populated fires table on its own.
 
 ---
 
 ## 🤖 GeoAI Model
 
-The model is a `RandomForestClassifier` that classifies **high FRP (Fire Radiative Power) among already detected fire events**. It does not predict fire occurrence, because `fire_events` contains detections rather than labelled no-fire observations.
+### What it predicts
 
-**Approach**
+The model estimates the probability that an **already detected** fire is severe, defined as `FRP >= HIGH_FRP_THRESHOLD` (10 MW by default). It does **not** predict whether a fire will start: `fire_events` contains detections only, with no labelled "no fire" observations. Each row is one satellite detection, not one fire, since a single large fire produces many detections.
 
-- **Temporal split**: training and test sets are separated by time (not randomly), so the model is evaluated on future data relative to what it was trained on.
-- **Weather matching**: each fire is matched to the nearest same-day weather record within 100 km.
-- **Output**: the trained pipeline is saved to `modeling/artifacts/high_frp_classifier.joblib`.
+### How it is built
 
-**Weather coverage**
-
-`integration/NASA_POWER.py` defaults to `WEATHER_COVERAGE=grid`. It scans the
-fire data for every place with detections, then downloads daily RH2M,
-PRECTOTCORR and GWETTOP for the whole fire date range from the POWER regional
-endpoint, one 10° × 10° tile and one parameter per request. Only grid points
-near fires are kept, thinned to 1° × 1.25°, so every detection lies within
-about 90 km of a weather point (inside the 100 km matching radius). For the
-2025 archive that is about 11,400 points, 392 tiles and 1,176 requests, roughly
-75 minutes at a polite pace. Responses are cached in `raw_data/power_cache/`,
-so an interrupted run resumes, and a manifest next to the output file makes
-later runs skip the download. The previous single-point file is kept as
-`nasa_power_weather_point.csv`; set `WEATHER_COVERAGE=point` for the old
-behaviour. The transform stage re-cleans the weather when the raw file is
-newer, and the load stage reloads `weather_data` when its row count changes.
-
-**Data requirements**
-
-Weather rows must contain `date`, `latitude`, and `longitude` as well as one or more of `RH2M`, `PRECTOTCORR`, and `GWETTOP`. The NASA POWER extraction script preserves these join keys; rerun extraction, transformation, and loading after updating an existing weather table.
-
-**Two training modes**
-
-| Mode | Setting | Trains on | Use when |
-|---|---|---|---|
-| Weather-matched (default) | `REQUIRE_WEATHER_MATCH=1` | Only detections with a same-day NASA POWER record within the radius | Grid weather covers the fire data (the default download) |
-| All detections | `REQUIRE_WEATHER_MATCH=0` | Every detection; missing weather is imputed | Weather coverage is much smaller than fire coverage (e.g. `WEATHER_COVERAGE=point`) |
-
-**The shipped model**
-
-`modeling/artifacts/high_frp_classifier.joblib` is trained on a uniform
-300 000-detection sample of the 2025 archive with grid weather matched to
-every detection (`REQUIRE_WEATHER_MATCH=1`, 299 999 of 300 000 matched). On a
-chronological hold-out of 45 590 detections from 20 October to 31 December
-2025 (25.7% severe):
-
-| Model | Training rows | Weather matched | ROC-AUC | Precision | Recall | Brier |
-|---|---|---|---|---|---|---|
-| Single Cairo station (original) | ~400 | all | 0.689 | 0.906 | 0.013 | 0.184 |
-| Global, weather imputed | 300 000 | 3 | 0.8887 | 0.627 | 0.759 | 0.1267 |
-| **Global, grid weather (shipped)** | 300 000 | 299 999 | **0.8892** | 0.630 | 0.759 | **0.1256** |
-| Global, grid weather | 1 200 000 | all | 0.8915 | 0.624 | 0.765 | 0.1258 |
-
-Brightness, confidence and pixel size carry most of the decision; humidity,
-soil wetness and precipitation together account for about 4%. Extending the
-weather coverage fixed the model's geographic collapse (the original model
-scored almost every fire on Earth the same, because its location splits all
-lay inside one region), but weather itself adds little once a fire is already
-detected, and four times more training rows adds about 0.003 ROC-AUC while
-producing a 121 MB artifact, over GitHub's file limit. Precision and recall
-are traded through the decision threshold (`DECISION_THRESHOLD`, or the
-`decision_threshold` query parameter).
-
-Every artifact records its training extent, metrics and feature importances;
-the API returns `in_training_extent=false` for scores outside that extent and
-the frontend shows a caution.
-
-**Configuration**
-
-The default high-FRP threshold is 10 MW. Configure the following with environment variables if needed:
-
-| Variable | Purpose |
+| Aspect | Choice |
 |---|---|
-| `HIGH_FRP_THRESHOLD` | FRP value (MW) above which a fire is labelled high severity |
-| `MAX_WEATHER_DISTANCE_KM` | Maximum distance for matching a fire to a weather record |
-| `MAX_TRAINING_ROWS` | Cap on the number of rows used for training |
-| `REQUIRE_WEATHER_MATCH` | 1 (default) keeps only weather-matched fires; 0 trains on all fires |
-| `TRAINING_SOURCE` | `db` (default) or `csv` to train from `cleaned_data/` without PostgreSQL |
-| `MODEL_ARTIFACT_PATH` | Where to save the trained model |
-| `RF_N_ESTIMATORS`, `RF_MIN_SAMPLES_LEAF`, `RF_MAX_DEPTH` | Forest size (200 / 20 / 18 by default; depth 0 = unlimited). Small leaves on large samples produce gigabyte artifacts |
-| `DB_SCHEMA` | Database schema containing the tables |
+| Algorithm | `RandomForestClassifier` (200 trees, `min_samples_leaf=20`, `max_depth=18`, `class_weight="balanced_subsample"`) inside a pipeline with a median imputer and a standard scaler |
+| Fire features | `latitude`, `longitude`, `brightness`, `confidence`, `scan`, `track`, `type`, `acq_time`, `day_of_year` |
+| Weather features | `rh2m`, `prectotcorr`, `gwettop`, matched per fire |
+| Weather matching | Each fire is paired with the nearest NASA POWER point **from the same day** within `MAX_WEATHER_DISTANCE_KM` (default 100 km), using a haversine BallTree per day |
+| Sampling | Fires are streamed in chunks and a uniform random sample of up to `MAX_TRAINING_ROWS` rows is kept |
+| Validation | Chronological split by date: the first 80% of distinct dates train, the last 20% test, so the model is scored on later data than it learned from. No random splitting, which would leak temporal patterns |
+| Output | `modeling/artifacts/high_frp_classifier.joblib` |
+
+The same matching rule is used at serving time by `api/weather_index.py`, which avoids train/serve skew. By default only weather-matched fires are used for training (`REQUIRE_WEATHER_MATCH=1`); set it to `0` to train on every detection and let the imputer fill missing weather.
+
+### Results of the committed model
+
+Measured on the chronological hold-out (test period starting 2025-10-20; 254,409 training rows and 45,590 test rows from a global 2025 sample, about 28% of which are high-FRP):
+
+| Metric | Value |
+|---|---|
+| Accuracy | 0.824 |
+| Precision | 0.630 |
+| Recall | 0.759 |
+| F1 | 0.688 |
+| ROC-AUC | 0.889 |
+
+Feature importance is dominated by the sensor and pixel characteristics, with weather contributing modestly:
+
+| Feature | Importance |
+|---|---|
+| `brightness` | 0.418 |
+| `confidence` | 0.141 |
+| `scan` | 0.135 |
+| `track` | 0.108 |
+| `acq_time` | 0.052 |
+| `longitude` | 0.037 |
+| `latitude` | 0.035 |
+| `day_of_year` | 0.023 |
+| `rh2m` | 0.021 |
+| `gwettop` | 0.015 |
+| `type` | 0.009 |
+| `prectotcorr` | 0.007 |
+
+These values are stored inside the artifact together with the training extent (area and period) and hyperparameters, and they are exposed by `GET /api/v1/model`. Retraining replaces them. Pixel size matters because MODIS pixels are larger than VIIRS pixels and integrate more fire, so the sensor you choose affects the score.
+
+### Training options
+
+```bash
+python modeling/train_model.py                      # train (skipped if the artifact exists)
+FORCE_RETRAIN=1 python modeling/train_model.py      # retrain over an existing artifact
+TRAINING_SOURCE=csv python modeling/train_model.py  # train from cleaned_data/ without PostgreSQL
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HIGH_FRP_THRESHOLD` | `10` | FRP (MW) at or above which a detection is labelled severe |
+| `MAX_WEATHER_DISTANCE_KM` | `100` | Maximum distance for matching a fire to a same-day weather point |
+| `MAX_TRAINING_ROWS` | `500000` | Cap on the size of the random training sample |
+| `REQUIRE_WEATHER_MATCH` | `1` | `1` trains only on weather-matched fires; `0` trains on all and imputes weather |
+| `TRAINING_SOURCE` | `db` | `db` (PostgreSQL) or `csv` (cleaned files, uses `fires_sample.csv` when present) |
+| `RF_N_ESTIMATORS` / `RF_MIN_SAMPLES_LEAF` / `RF_MAX_DEPTH` | `200` / `20` / `18` | Forest size (`RF_MAX_DEPTH=0` means unlimited) |
+| `MODEL_ARTIFACT_PATH` | `modeling/artifacts/high_frp_classifier.joblib` | Where the model is saved |
+| `FORCE_RETRAIN` | `0` | Retrain even if an artifact exists |
+| `DB_SCHEMA` | `public` | Schema holding the tables |
+
+The artifact is written to a temporary file and swapped in, so a running API never reads a half-written model and a failed save keeps the previous one.
 
 ---
 
 ## 🌐 API (FastAPI)
 
-The API connects to the database created by the pipeline and serves the trained
-model. Start it with:
-
-```bash
-pip install -r requirements.txt
-uvicorn api.main:app --reload --port 8000
-```
-
-Then open:
-
-- `http://localhost:8000/` – interactive map frontend
-- `http://localhost:8000/docs` – Swagger UI (OpenAPI)
-- `http://localhost:8000/health` – backend, model and data status
+Start it with `uvicorn api.main:app --reload` (or through Docker). The interactive reference is at `/docs`.
 
 ### Endpoints
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health` | Service status: data backend, model, weather coverage, fire date range |
-| GET | `/api/v1/model` | Model metadata: features, target, thresholds |
-| GET | `/api/v1/fires` | Paginated fire detections. Filters: `start_date`, `end_date`, `bbox=min_lon,min_lat,max_lon,max_lat`, `source` (repeatable), `min_confidence`, `min_frp`, `max_frp`, `daynight`, `order`, `limit`, `offset`. Add `predict=true` to attach predictions and `include_total=true` for a total count |
-| GET | `/api/v1/fires/geojson` | Same filters, returned as a GeoJSON `FeatureCollection` with predicted severity per point (for maps) |
-| GET | `/api/v1/fires/stats` | Totals and per-day / per-satellite / day-night aggregates for the filtered fires |
-| GET | `/api/v1/fires/date-range` | Earliest and latest acquisition dates |
-| GET | `/api/v1/weather` | NASA POWER observations used for enrichment |
-| POST | `/api/v1/predict` | Score one detection (JSON body, see below) |
-| POST | `/api/v1/predict/batch` | Score up to 5 000 detections at once |
-| GET | `/api/v1/ask/status` | Whether the assistant can answer (credentials found, enabled) |
-| POST | `/api/v1/ask` | Ask a question in plain language (`{"question": "...", "history": [...]}`); returns the answer and the data lookups behind it |
-| POST | `/api/v1/refresh` | Rebuild the weather index and date range after the pipeline loaded new data (they also expire after `API_CACHE_TTL_SECONDS`, default 300) |
+| Method and path | Description |
+|---|---|
+| `GET /health` | Status of the data backend, model, weather index, and fire date range (`ok` or `degraded`) |
+| `GET /api/v1/model` | Model metadata: features, target, metrics, feature importances, training extent |
+| `POST /api/v1/refresh` | Rebuild the weather index and date-range caches after a pipeline run |
+| `GET /api/v1/fires` | Filtered, paginated detections; `predict=true` attaches predictions, `include_total=true` adds a total count |
+| `GET /api/v1/fires/geojson` | The same detections as a GeoJSON FeatureCollection (predictions on by default) |
+| `GET /api/v1/fires/stats` | Totals, mean and max FRP, severe share, and breakdowns by date, satellite, and day/night |
+| `GET /api/v1/fires/date-range` | Earliest and latest acquisition dates |
+| `GET /api/v1/weather` | Weather observations with optional date filter |
+| `POST /api/v1/predict` | Score one detection (weather is matched automatically) |
+| `POST /api/v1/predict/batch` | Score many detections (up to `API_MAX_BATCH_PREDICTIONS`) |
+| `POST /api/v1/ask` | Ask a question in plain language (see [Ask the Data](#-ask-the-data-assistant)) |
+| `GET /api/v1/ask/status` | Whether the assistant is available |
 
-If the model or the data backend is unavailable the service still starts:
-`/health` reports `degraded` with the reason, the affected endpoints answer
-503, and everything else keeps working (for example the map with
-`predict=false`).
+**Fire filters** (shared by the fire endpoints): `start_date`, `end_date`, `bbox` (`min_lon,min_lat,max_lon,max_lat`), `source` (repeatable: `modis`, `viirs_j1`, `viirs_suomi`), `min_confidence`, `min_frp`, `max_frp`, `daynight` (`D` or `N`), `limit`, `offset`, and `order` (`acq_date_desc`, `acq_date_asc`, `frp_desc`, `frp_asc`). Invalid combinations return `422`.
 
-Example prediction:
+**Example**
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/predict \
   -H "Content-Type: application/json" \
-  -d '{"latitude": 30.05, "longitude": 31.2, "acq_date": "2025-01-15", "acq_time": 1130,
-       "brightness": 325.4, "confidence": 80, "scan": 1.1, "track": 1.0, "type": 0}'
+  -d '{
+        "latitude": 30.05, "longitude": 31.2, "acq_date": "2025-01-15",
+        "acq_time": 1130, "brightness": 325.4, "confidence": 80,
+        "scan": 1.1, "track": 1.0, "type": 0
+      }'
 ```
 
-```json
-{
-  "high_frp_probability": 0.1432,
-  "is_high_frp": false,
-  "predicted_label": "normal_frp",
-  "decision_threshold": 0.5,
-  "high_frp_threshold_mw": 10.0,
-  "weather": {"matched": true, "supplied": false, "distance_km": 20.04,
-              "rh2m": 44.26, "prectotcorr": 0.0, "gwettop": 0.16}
-}
-```
-
-Weather features are matched exactly as during training: the nearest same-day
-NASA POWER record within `MAX_WEATHER_DISTANCE_KM`. If none exists the
-response reports `"matched": false` and the model's median imputer fills the
-gap. Callers may also pass `rh2m`, `prectotcorr` and `gwettop` directly.
+The response contains `high_frp_probability`, `is_high_frp`, `predicted_label`, the `weather` that was matched (or `supplied` by the caller), and `in_training_extent`, which is `false` when the location or date lies outside what the model was trained on, meaning the score is an extrapolation. Weather values can be passed in the request (`rh2m`, `prectotcorr`, `gwettop`) and take priority over the matched ones.
 
 ### Data backends
 
-`DATA_BACKEND` in `.env` controls where the API reads from:
+`DATA_BACKEND` selects where the API reads data:
 
 | Value | Behaviour |
 |---|---|
-| `auto` (default) | Use PostgreSQL when it is reachable, otherwise fall back to the cleaned CSV files |
-| `postgres` | Require PostgreSQL (`fire_events`, `weather_data`) |
-| `csv` | Serve from `cleaned_data/` without a database |
+| `auto` (default) | Use PostgreSQL when reachable, otherwise fall back to the cleaned CSV files |
+| `postgres` | PostgreSQL only; fail if unavailable |
+| `csv` | In-memory CSV backend |
 
-The CSV backend loads `cleaned_data/fires_sample.csv` when present (a uniform
-random sample of the full dataset; build it with
-`python -m api.tools_make_sample --rows 300000`), otherwise the first
-`CSV_MAX_ROWS` rows of `cleaned_master_fires.csv`. `/health` reports
-`is_subset: true` in that case.
-
-For interactive queries on the full `fire_events` table, create the supporting
-indexes once with `python -m api.tools_create_indexes`.
-
-### Logging
-
-Every request is logged with method, path, status, latency and a request id
-(also returned in the `X-Request-ID` header) to `logs/api.log`, which rotates
-at 5 MB. Uvicorn server logs go to the same file.
-
-### Tests
+The CSV backend serves `cleaned_data/fires_sample.csv` when present, otherwise the first `CSV_MAX_ROWS` rows of `cleaned_master_fires.csv`. Create a sample with:
 
 ```bash
-pip install -r requirements-dev.txt
-pytest
+python -m api.tools_make_sample --rows 300000
 ```
 
-The tests run the API on a tiny in-memory dataset through the CSV backend and
-exercise the SQL repository against SQLite, so no database is required.
+For fast filtering on large PostgreSQL tables, create the indexes once (idempotent):
+
+```bash
+python -m api.tools_create_indexes
+```
+
+### Resilience
+
+A missing database or model does not stop the service. The affected endpoints answer `503` with an explanation, `/health` reports `degraded` and says why, and the frontend keeps loading. The weather index and fire date range are cached and rebuilt after `API_CACHE_TTL_SECONDS` (default 300) or when `POST /api/v1/refresh` is called, so new data appears without restarting the API.
 
 ---
 
 ## 🗺️ Frontend (Leaflet map)
 
-The API serves `frontend/` at `/`. The page shows fire detections for a date
-range and area, coloured by predicted severity (or by probability, observed
-FRP, or satellite), with:
+The API serves the frontend at `/` (disable with `SERVE_FRONTEND=0`). It needs internet access in the browser to load Leaflet, anime.js, a web font, and map tiles.
 
-- Filters for date range, satellite source, confidence, FRP, day/night and the
-  current map view.
-- Summary cards, a detections-per-day chart with the high-FRP share, and a
-  per-satellite breakdown from `/api/v1/fires/stats`.
-- Popups with the detection's attributes, predicted probability and whether
-  weather was matched.
-- A **Predict severity** panel: click the map to pick a location, adjust the
-  detection values and get a live prediction from `/api/v1/predict`.
-
-Basemaps (Esri dark/satellite, OpenStreetMap) need no API key. Set
-`SERVE_FRONTEND=0` to run the API without the UI, and `CORS_ORIGINS` if the
-frontend is hosted elsewhere.
+- **Map** of fire detections coloured by predicted severity, predicted probability, measured FRP, or satellite, with several basemaps (light, dark, satellite imagery, streets).
+- **Summary panel** with the number of detections, the share the model expects to be severe versus the share measured at or above the threshold, a daily chart, and a per-satellite breakdown.
+- **Filters**: date range, satellite, "only the area on screen", minimum confidence, minimum FRP, day/night, and how many points to draw (up to 50,000).
+- **Score a detection of your own**: click the map to place a draggable pin, set the sensor and detection values, and get the severity probability with the weather that was matched, plus the features that drive the model.
+- **Ask about the data**: the assistant panel described below.
+- **Appearance**: Graphite and Forest palettes with auto, light, and dark modes.
 
 ---
 
-## 💬 Ask the data (assistant)
+## 💬 Ask the Data (assistant)
 
-`POST /api/v1/ask` answers questions such as "how did severe fires change
-month by month in Brazil?" or "how is weather matched to a fire?". Claude
-(`claude-opus-5-5` by default) answers by calling read-only tools that run on
-the same repository, model and weather index as the REST API:
+`POST /api/v1/ask` (and the "Ask about the data" panel in the map) answers natural-language questions such as "How did severe fires change month by month?" or "How reliable is the severity model?". It is powered by Claude and works through read-only tools, so numbers come from the data rather than from the model's memory.
 
-| Tool | What it reads |
+| Tool | Purpose |
 |---|---|
-| `get_data_coverage` | Date range, backend, sample fraction, weather coverage |
-| `get_fire_statistics` | Counts, FRP, severe share, by satellite / day-night / day or month |
-| `list_fires` | Up to 50 detections, optionally with predicted severity |
-| `predict_fire_severity` | The model's score for a described detection |
-| `get_model_info` | Metrics, feature importances, training extent |
-| `search_project_docs` | TF-IDF search over this README and a data dictionary |
+| `get_data_coverage` | Date range, backend, whether the API serves a random sample, weather coverage |
+| `get_fire_statistics` | Counts, FRP statistics, severe share, and breakdowns for any filter |
+| `list_fires` | Individual detections (up to 50), optionally with predicted probability |
+| `predict_fire_severity` | Score a hypothetical or real detection |
+| `get_model_info` | Metrics, feature importances, hyperparameters, training extent |
+| `search_project_docs` | TF-IDF search over this README and a built-in data dictionary |
 
-Numbers in answers come from the tools, and every response lists the lookups
-it made (the frontend shows them under the answer). The tool loop is capped at
-`ASSISTANT_MAX_ROUNDS` rounds, the system prompt and tools are prompt-cached,
-and the server-side refusal fallback is on by default (`ASSISTANT_FALLBACKS`).
-Tool inputs are validated and clamped before any query runs, and the tools
-cannot modify data.
+Details:
 
-Set `ANTHROPIC_API_KEY` in `.env` to enable it. Without credentials the rest
-of the API runs normally and `/api/v1/ask` answers 503 with the reason; the
-frontend shows the same message. Each question costs a few cents of API usage.
+- The tool loop is capped (`ASSISTANT_MAX_ROUNDS`), every lookup is returned to the caller in `tool_calls`, and tool errors are passed back to the model so it can correct its input.
+- Tool inputs are validated and clamped before they reach a query.
+- The system prompt and tool definitions are prompt-cached between requests.
+- When the CSV backend serves a sample, the assistant says so and scales absolute counts accordingly.
+- The assistant needs `ANTHROPIC_API_KEY`; the rest of the API works without it. Switch it off with `ASSISTANT_ENABLED=0`. Choose the model with `ASSISTANT_MODEL` and the reasoning effort with `ASSISTANT_EFFORT` (`low`, `medium`, `high`, `xhigh`, or `max`).
+- `ASSISTANT_FALLBACKS=1` lets the API re-run a request on Anthropic's recommended fallback model if a safety classifier declines it.
+- Because `search_project_docs` indexes this README, keeping it accurate directly improves the assistant's answers about the project.
 
 ---
 
-## 🛫 Airflow
+## 🐳 Docker
 
-`orchestration/dags/geodata_pipeline.py` runs the pipeline as an Airflow 3
-DAG (Airflow 2.x also works):
+One image serves both the API (default command) and the pipeline. The image runs as a non-root user and has a health check on `/health`.
+
+```bash
+cp .env.example .env            # set DB_PASSWORD (required by Compose)
+
+docker compose up -d                       # PostGIS + API (the API falls back to CSV until data is loaded)
+docker compose run --rm pipeline           # one full run: extract → transform → load → train
+docker compose --profile scheduled up -d   # also start the scheduler that reruns the pipeline periodically
+docker compose --profile airflow up -d     # Airflow UI at http://localhost:8080
+```
+
+| Service | Image | Profile | Purpose |
+|---|---|---|---|
+| `db` | `postgis/postgis:16-3.4` | always | PostgreSQL + PostGIS with a persistent volume |
+| `api` | `geodata-ai` | always | FastAPI service on `API_PORT` (default 8000) |
+| `pipeline` | `geodata-ai` | `pipeline` | One-shot `python main.py` |
+| `scheduler` | `geodata-ai` | `scheduled` | `python scheduler.py` |
+| `airflow` | `geodata-airflow` | `airflow` | Airflow standalone with the project DAG |
+
+Put the FIRMS archives in `./raw_data` before running the pipeline. `raw_data`, `cleaned_data`, `logs`, and `modeling/artifacts` are mounted as volumes, so data and the trained model survive container rebuilds.
+
+---
+
+## ⏱️ Scheduling and Airflow
+
+### Interval scheduler
+
+`scheduler.py` reruns `main.py` in a subprocess on a fixed interval, so a failing run never takes the scheduler down. It logs to `logs/scheduler.log`.
+
+```bash
+PIPELINE_INTERVAL_HOURS=24 python scheduler.py
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PIPELINE_INTERVAL_HOURS` | `24` | Hours between runs (fractions allowed) |
+| `PIPELINE_RUN_ON_START` | `1` | Run immediately on start-up |
+| `PIPELINE_MAX_RUNS` | unlimited | Stop after this many runs |
+
+Because every stage is idempotent, a scheduled run is cheap when nothing has changed. You can also call `python main.py` from cron or Windows Task Scheduler.
+
+### Airflow DAG
+
+`orchestration/dags/geodata_pipeline.py` runs the stages as separate, retryable tasks (2 retries with exponential backoff, one active run at a time):
 
 ```text
 download_weather ─┬─ transform_fires ───┬─ check_cleaned_outputs ─ load_database ─ train_model ─ refresh_api
                   └─ transform_weather ─┘
 ```
 
-Each task retries twice with exponential backoff, runs are serialised
-(`max_active_runs=1`), and `refresh_api` tells the running API to rebuild its
-caches. Trigger a run with `{"retrain": true}` to retrain over an existing
-model. The task bodies live in `orchestration/tasks.py`, which has no Airflow
-dependency and is unit-tested.
-
-```bash
-docker compose --profile airflow up -d     # http://localhost:8080
-docker compose logs airflow | grep -i password   # admin password on first start
-```
-
-The container runs Airflow in standalone mode (one container, SQLite
-metadata), which suits a single machine. For production, point the official
-Airflow Compose stack's `dags` folder at `orchestration/dags/`. Airflow does
-not run natively on Windows; use Docker or WSL. `GEODATA_SCHEDULE` sets the
-schedule (default `@daily`, `none` for manual runs only).
+- `check_cleaned_outputs` fails fast before the database is touched if a transform produced nothing.
+- `refresh_api` calls `POST /api/v1/refresh` on `GEODATA_API_URL` so new data is served immediately. It never fails the pipeline, because the API may simply not be running.
+- Trigger the DAG with `{"retrain": true}` to retrain over an existing model.
+- The task functions live in `orchestration/tasks.py` and do not import Airflow, so they are unit-testable and reusable from any scheduler.
+- `GEODATA_SCHEDULE` sets the schedule (default `@daily`; `none` for manual only). With `docker compose --profile airflow up -d` the UI is at `http://localhost:8080` and the admin password is printed in the container log on first start. This Compose service is for a single machine; use the official multi-container Airflow setup with the same DAG folder in production.
 
 ---
 
-## 🐳 Docker
+## ⚙️ Configuration Reference
 
-The repository ships a single image that runs both the API and the pipeline,
-plus a Compose stack with PostGIS.
+Everything is configured through environment variables (loaded from `.env`). `.env.example` is the complete template.
 
-```bash
-cp .env.example .env          # set DB_PASSWORD at least
-docker compose up -d          # PostGIS + API on http://localhost:8000
-docker compose run --rm pipeline   # extract -> transform -> load -> train (needs raw_data/)
-```
-
-| Service | Role | Started by |
-|---|---|---|
-| `db` | PostgreSQL 16 + PostGIS 3.4, data in the `pgdata` volume | `docker compose up` |
-| `api` | FastAPI + frontend; waits for the database, mounts `cleaned_data/`, `modeling/artifacts/`, `logs/` | `docker compose up` |
-| `pipeline` | One-off `python main.py` run against the stack | `docker compose run --rm pipeline` |
-| `scheduler` | Reruns the pipeline every `PIPELINE_INTERVAL_HOURS` | `docker compose --profile scheduled up -d` |
-
-Until the pipeline has loaded the tables, the API serves from the cleaned CSV
-files if they exist in `cleaned_data/` (see *Data backends*). Host ports are
-set with `API_PORT` and `DB_PORT_HOST` in `.env`.
-
----
-
-## ⏱️ Scheduled runs
-
-`scheduler.py` reruns `main.py` on an interval without extra dependencies and
-logs to `logs/scheduler.log`. Because every stage is idempotent, repeated runs
-only redo work whose inputs changed.
-
-```bash
-PIPELINE_INTERVAL_HOURS=24 python scheduler.py      # or the Compose "scheduled" profile
-```
-
-| Variable | Purpose |
+| Group | Variables |
 |---|---|
-| `PIPELINE_INTERVAL_HOURS` | Hours between runs (default 24, fractions allowed) |
-| `PIPELINE_RUN_ON_START` | Run immediately on start-up (default 1) |
-| `PIPELINE_MAX_RUNS` | Stop after this many runs (unlimited by default) |
+| Database | `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_SCHEMA` |
+| Data locations | `RAW_DATA_DIR`, `CLEANED_DATA_DIR` |
+| Weather download | `WEATHER_COVERAGE`, `WEATHER_GRID_LAT_STEP`, `WEATHER_GRID_LON_STEP`, `WEATHER_REQUEST_PAUSE`, `WEATHER_START`, `WEATHER_END`, `WEATHER_LATITUDE`, `WEATHER_LONGITUDE` |
+| Modeling | `HIGH_FRP_THRESHOLD`, `MAX_WEATHER_DISTANCE_KM`, `REQUIRE_WEATHER_MATCH`, `TRAINING_SOURCE`, `MAX_TRAINING_ROWS`, `RF_N_ESTIMATORS`, `RF_MIN_SAMPLES_LEAF`, `RF_MAX_DEPTH`, `MODEL_ARTIFACT_PATH`, `FORCE_RETRAIN` |
+| API | `DATA_BACKEND`, `MODEL_PATH`, `DECISION_THRESHOLD`, `CORS_ORIGINS`, `API_MAX_GEOJSON_FEATURES`, `API_CACHE_TTL_SECONDS`, `CSV_MAX_ROWS`, `FIRES_SAMPLE_FILE`, `SERVE_FRONTEND`, `API_LOG_FILE`, `LOG_LEVEL` |
+| Assistant | `ANTHROPIC_API_KEY`, `ASSISTANT_ENABLED`, `ASSISTANT_MODEL`, `ASSISTANT_EFFORT`, `ASSISTANT_MAX_ROUNDS`, `ASSISTANT_FALLBACKS` |
+| Docker and scheduling | `API_PORT`, `DB_PORT_HOST`, `PIPELINE_INTERVAL_HOURS`, `PIPELINE_RUN_ON_START`, `GEODATA_SCHEDULE`, `GEODATA_API_URL`, `AIRFLOW_PORT`, `AIRFLOW_UID` |
 
-For a system scheduler, call the pipeline directly instead:
+Never commit `.env`; it is listed in `.gitignore` together with `raw_data/`, `cleaned_data/`, and `logs/`.
 
-- cron: `0 3 * * * cd /opt/geodata && .venv/bin/python main.py >> logs/cron.log 2>&1`
-- Windows Task Scheduler: action `python.exe main.py`, "Start in" set to the repository folder.
+---
+
+## 📝 Logging
+
+| File | Written by | Content |
+|---|---|---|
+| `logs/pipeline.log` | the pipeline stages (via `config.py`) | Stage progress, row counts, warnings, errors |
+| `logs/api.log` | the API (rotating, 5 MB × 5 files) | Startup, model and data events, uvicorn logs, and one line per request |
+| `logs/scheduler.log` | `scheduler.py` | Run start, duration, success or failure |
+
+Every API response carries `X-Request-ID` and `X-Response-Time-ms` headers, and unhandled errors are returned as JSON with the request id so failures can be correlated with the log. Set `LOG_LEVEL` to change verbosity.
+
+---
+
+## 🧪 Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The suite runs against a tiny fire and weather dataset served through the CSV backend, plus SQLite standing in for PostgreSQL in the database tests, so it needs neither PostgreSQL nor an Anthropic key. The Airflow DAG test is skipped automatically when Airflow is not installed (Airflow itself runs in Docker).
+
+| File | Covers |
+|---|---|
+| `tests/test_api.py` | Health, model info, fire filters, GeoJSON, stats, weather, predictions, headers, frontend |
+| `tests/test_assistant.py` | The tool loop with a fake client, tool validation, documentation search, assistant endpoints |
+| `tests/test_degraded.py` | Missing model or data backend, exact GeoJSON truncation, cache refresh, error responses |
+| `tests/test_sql_repository.py` | The PostgreSQL repository's filters, pagination, statistics, and weather reads |
+| `tests/test_load.py` | Staging-table loading, skip logic, reload on changed weather, crash safety |
+| `tests/test_weather_download.py` | Grid footprint, tile alignment, year chunks, parameter validation |
+| `tests/test_orchestration.py` | Task functions, API refresh behaviour, and the Airflow DAG structure (needs Airflow installed) |
 
 ---
 
@@ -509,9 +613,15 @@ For a system scheduler, call the pipeline directly instead:
 SELECT COUNT(*) FROM fire_events;
 SELECT COUNT(*) FROM weather_data;
 
--- Quick spatial sanity check
-SELECT ST_AsText(geom) FROM fire_events LIMIT 5;
+SELECT MIN(acq_date), MAX(acq_date) FROM fire_events;
+
+-- The tables store plain latitude/longitude columns; build PostGIS geometries on demand
+SELECT ST_AsText(ST_SetSRID(ST_MakePoint(longitude, latitude), 4326))
+FROM fire_events
+LIMIT 5;
 ```
+
+Or ask the running API: `curl http://localhost:8000/health`.
 
 ---
 
@@ -519,52 +629,43 @@ SELECT ST_AsText(geom) FROM fire_events LIMIT 5;
 
 | Problem | Likely cause / fix |
 |---|---|
-| `psycopg2` connection error | Check `.env` values and that PostgreSQL is running |
+| `psycopg2` connection error | Check the `.env` values and that PostgreSQL is running; in Docker the host is `db` |
 | `type "geometry" does not exist` | Run `CREATE EXTENSION postgis;` in the target database |
+| `Grid weather needs the fire data…` | Neither `cleaned_master_fires.csv` nor the raw FIRMS archives were found; place them in `raw_data/` using the names in [Getting Started](#3-add-the-firms-archives) |
+| Weather download is slow or interrupted | It is resumable: rerun `python main.py` and cached tiles are reused. Raise `WEATHER_REQUEST_PAUSE` if POWER throttles you |
+| Model finds no matching weather | Weather rows need `date`, `latitude`, `longitude`; rerun extraction, transformation, and loading, or increase `MAX_WEATHER_DISTANCE_KM` |
+| A stage is skipped unexpectedly | Its output already exists; delete the file, table, or artifact to rerun it (or `FORCE_RETRAIN=1` for training) |
+| Validation does not run again | Delete `cleaned_data/.fire_validated.flag` |
+| API returns `503` on data endpoints | No data backend is available; check `/health`, run the pipeline, or use `DATA_BACKEND=csv` |
+| Predictions return `503` | The model is not loaded; train it or check `MODEL_PATH` |
+| New data does not appear in the API | Call `POST /api/v1/refresh` or wait for `API_CACHE_TTL_SECONDS` |
+| `/api/v1/ask` returns `503` | `ANTHROPIC_API_KEY` is missing or `ASSISTANT_ENABLED=0`; see `/api/v1/ask/status` |
 | Package install fails | Use Python 3.10 – 3.12 and a fresh virtual environment |
-| A stage is skipped unexpectedly | Its output already exists; delete the file, table, or saved model to rerun it |
-| Validation is not running again | Delete `cleaned_data/.fire_validated.flag` |
-| Unclear failure | Check `logs/pipeline.log` |
-| Model finds no matching weather | Ensure weather rows include `date`, `latitude`, `longitude`, and rerun extraction, transformation, and loading |
-| API starts with `backend: csv` although PostgreSQL exists | Check `.env` credentials; with `DATA_BACKEND=auto` the API falls back to CSV when the connection fails (see `logs/api.log`) |
-| API queries are slow on the full table | Run `python -m api.tools_create_indexes` once |
-| Predictions report `"matched": false` | No NASA POWER record for that date within `MAX_WEATHER_DISTANCE_KM`; extend weather coverage (see roadmap) |
+| Unclear failure | Check `logs/pipeline.log` (pipeline) or `logs/api.log` (API) |
 
 ---
 
 ## 🗺️ Roadmap
 
-**Completed**
-
-- [x] Project structure, centralized configuration (`config.py`, `.env`), and dependency management
+- [x] Project structure, centralized configuration, and dependency management
 - [x] ETL pipeline for NASA FIRMS (MODIS and VIIRS) and NASA POWER data
-- [x] PostgreSQL/PostGIS schema (`fire_events`, `weather_data`) and bulk loading
-- [x] High-FRP `RandomForestClassifier` with temporal split, saved to `modeling/artifacts/high_frp_classifier.joblib`
-- [x] Pipeline orchestrator (`main.py`) running all stages with one command
-- [x] Idempotent execution with skip logic for existing files, tables, and the saved model
-- [x] Data-quality checks (`validate_fire_data`) with a flag file to skip repeated validation
-- [x] Structured logging to `logs/pipeline.log`
-- [x] Version control cleanup and publishing of code and trained model to GitHub
-
-**Next steps** (built on the current pipeline infrastructure)
-
-- [x] Build a lightweight FastAPI service that connects to the database and serves predictions from the trained model
-- [x] Extend logging to the API layer
-- [x] Build a frontend with interactive maps (Leaflet.js) showing fire locations and predicted severity
-- [x] Containerize the project with Docker
-- [x] Schedule automated runs (`scheduler.py` / Compose `scheduled` profile, cron or Task Scheduler)
-- [ ] Build a Power BI dashboard on top of the stored data
-
-**Future ideas**
-
-- [x] RAG system on top of the stored data and project knowledge (`POST /api/v1/ask`)
-- [x] Extend NASA POWER weather coverage to match the full time range of the fire data
-- [x] Orchestrate runs with Airflow for retries and a run history
+- [x] Global weather coverage with a resumable tile cache
+- [x] PostgreSQL/PostGIS loading through staging tables, with skip logic
+- [x] Data-quality validation with a flag file
+- [x] High-FRP `RandomForestClassifier` with a chronological hold-out
+- [x] Pipeline orchestrator (`main.py`), structured logging, and idempotent stages
+- [x] FastAPI service with PostgreSQL and CSV backends, predictions, and request logging
+- [x] Leaflet map frontend with click-to-predict
+- [x] "Ask the data" assistant with read-only tools and documentation search
+- [x] Docker and Docker Compose setup
+- [x] Scheduling with `scheduler.py` and an Airflow DAG
+- [x] Automated test suite
+- [x] Power BI dashboard on top of the stored data
 
 ---
 
-## 📄 License
+## 📄 License and Data Attribution
 
 This project is licensed under the [MIT License](LICENSE).
 
-**Data attribution:** Fire detection data is obtained from [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) (NASA LANCE). Weather data comes from the NASA POWER API. Please refer to each provider's terms of use and citation requirements when reusing the data.
+**Data attribution:** fire detection data comes from [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) (NASA LANCE), and weather data from the NASA POWER API. Please refer to each provider's terms of use and citation requirements when reusing the data.
